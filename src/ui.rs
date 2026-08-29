@@ -124,7 +124,7 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
                 format!("{} directories", app.dirs.len())
             }
         });
-        let note_width = note.as_ref().map_or(0, |note| note.chars().count() + 2);
+        let note_width = note.as_ref().map_or(0, |note| columns(note) + 2);
         let (visible, cursor) = field.view(width.saturating_sub(note_width));
         frame.render_widget(
             Line::from(Span::styled(visible.to_owned(), Style::new().fg(BRIGHT))),
@@ -133,7 +133,7 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
         if let Some(note) = note {
             let x = area
                 .right()
-                .saturating_sub(PAD_RIGHT + note.chars().count() as u16);
+                .saturating_sub(PAD_RIGHT + columns(&note) as u16);
             frame.render_widget(
                 Line::from(Span::styled(note, Style::new().fg(DIM))),
                 Rect {
@@ -159,13 +159,13 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let path = abbreviate(&app.dir, &app.home);
-    let note_width = note.as_ref().map_or(0, |s| s.content.chars().count() + 2);
+    let note_width = note.as_ref().map_or(0, |s| columns(&s.content) + 2);
     let mut spans = vec![Span::styled(
         truncate(&path, width.saturating_sub(note_width)),
         Style::new().fg(TEXT),
     )];
     if let Some(note) = note {
-        let used = spans[0].content.chars().count() + note.content.chars().count();
+        let used = columns(&spans[0].content) + columns(&note.content);
         spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
         spans.push(note);
     }
@@ -214,9 +214,9 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 _ => " ",
             };
 
-            let name_width = width.saturating_sub(size.chars().count() + 1);
+            let name_width = width.saturating_sub(columns(&size) + 1);
             let label = truncate(&label, name_width);
-            let gap = width.saturating_sub(label.chars().count() + size.chars().count());
+            let gap = width.saturating_sub(columns(&label) + columns(&size));
             let mut spans = Vec::new();
             if marking {
                 spans.push(Span::styled(
@@ -304,7 +304,7 @@ fn label_row(
     if !hint.is_empty() {
         let x = area
             .right()
-            .saturating_sub(PAD_RIGHT + hint.chars().count() as u16);
+            .saturating_sub(PAD_RIGHT + columns(hint) as u16);
         frame.render_widget(
             Line::from(Span::styled(hint.to_owned(), hint_style)),
             Rect {
@@ -319,7 +319,7 @@ fn label_row(
     let width = area
         .right()
         .saturating_sub(value_x + PAD_RIGHT)
-        .saturating_sub(hint.chars().count() as u16 + 2) as usize;
+        .saturating_sub(columns(hint) as u16 + 2) as usize;
     (value_x, width)
 }
 
@@ -477,10 +477,17 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Line::from(spans), area);
 }
 
+/// Display columns, which is what a terminal lays out in. A CJK name is twice
+/// as wide as it is long, so measuring one part of a row in chars and another
+/// in columns overruns the row by the difference.
+fn columns(s: &str) -> usize {
+    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
 /// Cuts to `width` columns, marking the cut so a truncated name never reads as
 /// a real one.
 fn truncate(s: &str, width: usize) -> String {
-    if s.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>() <= width {
+    if columns(s) <= width {
         return s.to_owned();
     }
     let mut out = String::new();

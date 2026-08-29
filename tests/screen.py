@@ -18,6 +18,7 @@ import fcntl
 import os
 import pty
 import re
+import unicodedata
 import select
 import struct
 import sys
@@ -25,6 +26,18 @@ import termios
 import time
 
 ROWS, COLS = 40, 120
+
+# A wide character occupies two columns and leaves the second one unwritable,
+# which is the distinction the dialog's own width arithmetic turns on. A grid
+# that advanced one column per character would agree with a bug rather than
+# catch it.
+WIDE = frozenset("WF")
+
+
+def cell_width(c):
+    if unicodedata.combining(c):
+        return 0
+    return 2 if unicodedata.east_asian_width(c) in WIDE else 1
 
 
 class Screen:
@@ -62,9 +75,14 @@ class Screen:
             elif c == "\x08":
                 self.col = max(self.col - 1, 0)
             elif c >= " ":
+                w = cell_width(c)
                 if self.col < self.cols and self.row < self.rows:
                     self.grid[self.row][self.col] = c
-                self.col += 1
+                    # The trailing half of a wide cell holds nothing, so it
+                    # takes up a column without contributing a character.
+                    for x in range(self.col + 1, min(self.col + w, self.cols)):
+                        self.grid[self.row][x] = ""
+                self.col += w
 
     def _escape(self, data, i):
         rest = data[i:]

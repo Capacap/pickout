@@ -34,6 +34,12 @@ head -c 10 /dev/urandom > "$tmp/Pictures/ref/one.txt"
 # walking away from it has something to walk into.
 head -c 20 /dev/urandom > "$tmp/Pictures/ref/photo.png"
 
+# A directory of its own, so that a name twice as wide as it is long cannot
+# shift the rows every other check counts on.
+mkdir -p "$tmp/Wide"
+head -c 1200 /dev/urandom > "$tmp/Wide/ascii.png"
+head -c 31500 /dev/urandom > "$tmp/Wide/日本語の写真です.png"
+
 passed=0
 failed=0
 
@@ -110,6 +116,15 @@ request untitled '{
   "filters": [{"label": "Images", "rules": [{"glob": "*.png"}]}],
   "current_filter": 0
 }'
+request wide '{
+  "mode": {"open_file": {"multiple": false}},
+  "title": "Open image",
+  "accept_label": null,
+  "start_dir": "'"$tmp"'/Wide",
+  "current_name": null,
+  "filters": [],
+  "current_filter": null
+}'
 request multi '{
   "mode": {"open_file": {"multiple": true}},
   "title": "Open boards",
@@ -182,6 +197,11 @@ check "the path bar abbreviates \$HOME" "~/Pictures" "$(row 2)"
 check "the cursor starts below .." "> ref/" "$(row 5)"
 check "sizes are shown for files only" "bern_copy.corkboard 31.5 kB" "$(row 7)"
 check "dotfiles are hidden by default" "photo.png 1.2 MB" "$(row 8)"
+
+run wide ''
+check "a name measured in columns keeps its size on the row" \
+    "日本語の写真です.png 31.5 kB" "$(row 6)"
+check "and the path bar above it fits the same way" "~/Wide" "$(row 2)"
 
 run save '\t\x00\x1bh'
 check "M-h reveals dotfiles" ".hidden_note 900 B" "$(row 7)"
@@ -364,8 +384,9 @@ echo "the jump list"
 
 run save '\x10'
 check "^P lists every directory under home" "> ~/Pictures" "$(row 4)"
-check "breadth-first, so the shallow ones come first" "~/Pictures/Screenshots" "$(row 5)"
-check "and the bar above says how many there are" "3 directories" "$(row 2)"
+check "breadth-first, so the shallow ones come first" "~/Wide" "$(row 5)"
+check "and the nested ones after them" "~/Pictures/Screenshots" "$(row 6)"
+check "and the bar above says how many there are" "4 directories" "$(row 2)"
 check "the footer says what the list is for" "Enter go Esc back" "$(footer)"
 
 run save '\x10\x00ref'
