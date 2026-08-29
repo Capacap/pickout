@@ -120,8 +120,12 @@ impl App {
         let name = Field::new(request.current_name.clone().unwrap_or_default());
         let request_filter = request.current_filter;
 
+        // Only a save draws a Name field, and `Tab` is gated the same way. A
+        // request carrying a name in any other mode would otherwise start
+        // focused on a field that is not on screen and cannot be left.
+        let saving = matches!(request.mode, Mode::SaveFile);
         let mut app = Self {
-            focus: if request.current_name.is_some() {
+            focus: if saving && request.current_name.is_some() {
                 Focus::Name
             } else {
                 Focus::List

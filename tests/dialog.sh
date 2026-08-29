@@ -116,6 +116,15 @@ request untitled '{
   "filters": [{"label": "Images", "rules": [{"glob": "*.png"}]}],
   "current_filter": 0
 }'
+request named '{
+  "mode": {"open_file": {"multiple": false}},
+  "title": "Open board",
+  "accept_label": null,
+  "start_dir": "'"$tmp"'/Pictures",
+  "current_name": "untitled.corkboard",
+  "filters": [],
+  "current_filter": null
+}'
 request wide '{
   "mode": {"open_file": {"multiple": false}},
   "title": "Open image",
@@ -302,6 +311,10 @@ check "Enter on a file opens it" "~/Pictures/bern_copy.corkboard" "$(paths)"
 
 run open '\r'
 check "Enter on a directory still descends" "~/Pictures/ref" "$(row 2)"
+
+run named '\x1b[B\x1b[B\x00\r'
+check "a name on a request with no Name field does not swallow the keys" \
+    "~/Pictures/bern_copy.corkboard" "$(paths)"
 
 run folder '\x13'
 check "^S chooses the directory the cursor is on" "~/Pictures/ref" "$(paths)"
