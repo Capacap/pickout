@@ -16,8 +16,8 @@ that cost time the first time round. This file is where it currently stands.
 
 Both halves work, and everything the portal interface can ask for is answered.
 The interface is the single screen the design asks for — browser and Name field
-visible at once, both live. What is left is dogfooding: routing this machine's
-file dialogs to filepick and living with it.
+visible at once, both live. This machine's file dialogs are routed to filepick;
+what is left is living with it and finding out what the tests could not.
 
 Working:
 
@@ -98,6 +98,11 @@ and switching over stay separate decisions. `install.sh` prints the line.
 
 To go back: put `termfilechooser` on that line and restart
 `xdg-desktop-portal.service`.
+
+The switch-over is worth checking without a window in the way: point
+`FILEPICK_TERMINAL` at a script that runs `tests/screen.py` and drive the real
+dialog with `KEYS`. A frontend call then goes app → `xdg-desktop-portal` →
+filepick → dialog → URI with nothing stubbed but the terminal.
 
 ## Configuration
 

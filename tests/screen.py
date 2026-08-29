@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Runs the dialog under a pty and prints the screen it ended up drawing.
 
 Grown from `reference/ptyharness.py`, which proved two things the hard way and
