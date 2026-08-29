@@ -16,6 +16,7 @@ use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::crossterm::{execute, terminal::SetTitle};
 use ratatui::widgets::ListState;
 
+use crate::config::{self, Config};
 use crate::field::Field;
 use crate::keys::{self, Action, Key, Keymap};
 use crate::model::{self, Entry, Fuzzy, Kind, SaveTarget};
@@ -34,7 +35,7 @@ pub fn run(request_path: &Path, response_path: &Path) -> Result<()> {
         .with_context(|| format!("reading {}", request_path.display()))?;
     let request: Request = serde_json::from_slice(&raw).context("parsing the request")?;
 
-    let mut app = App::new(request)?;
+    let mut app = App::new(request, &Config::load())?;
     let response = ratatui::run(|terminal| app.event_loop(terminal))?;
 
     // The daemon reads an empty or absent file as a cancel, so a crash before
@@ -114,11 +115,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(request: Request) -> Result<Self> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
+    pub fn new(request: Request, config: &Config) -> Result<Self> {
+        let home = config::home();
         let dir = request.start_dir.to_path_buf();
+        let (keys, problems) = Keymap::from_config(config);
         let name = Field::new(request.current_name.clone().unwrap_or_default());
         let request_filter = request.current_filter;
 
@@ -149,7 +149,7 @@ impl App {
             armed: false,
             target: SaveTarget::Empty,
             message: None,
-            keys: Keymap::default(),
+            keys,
             fuzzy: Fuzzy::default(),
             scan: None,
             done: None,
@@ -157,6 +157,15 @@ impl App {
         app.list.select(None);
         app.reload(None);
         app.suggest_extension();
+        // After the reload, which clears the message: this one is about the
+        // config file rather than the directory, and the user reading it is
+        // sitting in front of this screen and no other. Only the first of them,
+        // because the line holds one.
+        app.message = config
+            .problem
+            .clone()
+            .or_else(|| problems.first().cloned())
+            .or(app.message.take());
         Ok(app)
     }
 
@@ -837,7 +846,7 @@ impl App {
                 let Some(field) = self.path.take() else {
                     return;
                 };
-                self.go_to_typed(&field.text().to_owned());
+                self.go_to_typed(field.text());
             }
             _ => {}
         }

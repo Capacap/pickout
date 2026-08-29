@@ -445,5 +445,44 @@ run save '\x10\x00\x1b'
 check "Esc comes back to the browser" "~/Pictures" "$(row 2)"
 
 echo
+echo "keys from the config file"
+
+cat > "$FILEPICK_CONFIG" <<'TOML'
+[keys.global]
+"^E" = "commit"
+
+[keys.list]
+"^N" = "down"
+TOML
+
+run save '\t\x00\x0e\x0e'
+check "a rebound key moves the cursor" "> bern_copy.corkboard 31.5 kB" "$(row 7)"
+
+run save '\x05'
+check "and a rebound commit commits" "~/Pictures/untitled.corkboard" "$(paths)"
+
+run save '\t'
+check "the footer advertises the key that was bound, not the one shipped" \
+    "Tab pane ^E save Enter open/save ^P jump ^L path M-h hidden Esc cancel" \
+    "$(footer)"
+
+# A line it cannot use must cost that line and nothing else.
+cat > "$FILEPICK_CONFIG" <<'TOML'
+[keys.list]
+"^N" = "down"
+"^Q" = "descnd"
+TOML
+
+run save '\t\x00\x0e\x0e'
+check "a bad line does not take the good ones with it" \
+    "> bern_copy.corkboard 31.5 kB" "$(row 7)"
+
+run save ''
+check "and the screen says which line it was" \
+    '~/Pictures keys.list: there is no action called "descnd"' "$(row 2)"
+
+: > "$FILEPICK_CONFIG"
+
+echo
 printf '%d passed, %d failed\n\n' "$passed" "$failed"
 [[ $failed -eq 0 ]]

@@ -13,6 +13,7 @@
 //! falls back to the defaults and reports itself instead: to the journal on the
 //! daemon side, to the message line on the dialog side.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -25,6 +26,11 @@ pub struct Config {
     /// `suggested`, `last`, or an absolute path. See [`crate::portal::DirPolicy`].
     pub open_dir: Option<String>,
     pub save_dir: Option<String>,
+
+    /// `[keys.<context>]` tables, each mapping a key to an action. Held as
+    /// strings so that a name filepick does not know is reported against the
+    /// file it came from rather than failing to deserialise the whole of it.
+    pub keys: BTreeMap<String, BTreeMap<String, String>>,
 
     /// Why the file was ignored, if it was. Held rather than logged so that the
     /// dialog can put it on screen, which is the only place its user is looking.

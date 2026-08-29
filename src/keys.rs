@@ -12,6 +12,8 @@ use std::fmt;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::config::Config;
+
 /// Which set of bindings is in force. The overlays are their own layer rather
 /// than an addition to one: while the jump list is open, `Ctrl-P` closes it
 /// instead of opening it again, and nothing else global applies at all.
@@ -27,6 +29,10 @@ pub enum Context {
 
 impl Context {
     const ALL: [Self; 5] = [Self::Global, Self::List, Self::Name, Self::Jump, Self::Path];
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == name)
+    }
 
     /// The name of its table in the config file.
     pub fn as_str(self) -> &'static str {
@@ -221,7 +227,7 @@ impl Key {
                 });
             match stripped {
                 // A bare `^` or `M-` names no key at all.
-                Some((r, _, _)) if r.is_empty() => return None,
+                Some(("", _, _)) => return None,
                 Some((r, c, a)) => {
                     rest = r;
                     ctrl |= c;
@@ -377,6 +383,27 @@ impl Keymap {
         })
     }
 
+    /// Every binding in the config file, and everything in it that could not be
+    /// used. Problems are collected rather than raised: a keymap with one bad
+    /// line should cost that line, not the dialog, which cannot fail to start
+    /// without the application seeing a cancel it cannot tell from a real one.
+    pub fn from_config(config: &Config) -> (Self, Vec<String>) {
+        let mut map = Self::default();
+        let mut problems = Vec::new();
+        for (context, bindings) in &config.keys {
+            let Some(context) = Context::parse(context) else {
+                problems.push(format!("keys.{context}: there is no such pane"));
+                continue;
+            };
+            for (spec, action) in bindings {
+                if let Err(problem) = map.bind(context, spec, action) {
+                    problems.push(problem);
+                }
+            }
+        }
+        (map, problems)
+    }
+
     /// Applies one `[keys.<context>]` table, reporting what it could not use.
     ///
     /// A binding replaces every default for its key in that layer and goes to
@@ -506,6 +533,44 @@ mod tests {
         let mut map = Keymap::default();
         map.bind(Context::List, "Enter", "mark").unwrap();
         assert_eq!(map.action(Context::List, key("Enter")), Some(Action::Mark));
+    }
+
+    fn from_toml(body: &str) -> (Keymap, Vec<String>) {
+        Keymap::from_config(&toml::from_str::<Config>(body).unwrap())
+    }
+
+    #[test]
+    fn the_config_file_rebinds_and_says_what_it_could_not_use() {
+        let (map, problems) = from_toml(
+            r#"
+[keys.global]
+"^W" = "commit"
+"^Q" = "nonsense"
+
+[keys.list]
+"^N" = "down"
+
+[keys.elsewhere]
+"^X" = "commit"
+"#,
+        );
+        assert_eq!(map.action(Context::List, key("^W")), Some(Action::Commit));
+        assert_eq!(map.action(Context::List, key("^N")), Some(Action::Down));
+        // The good lines survive the bad ones: a keymap is a list of
+        // independent statements, not one statement that has to parse whole.
+        assert_eq!(problems.len(), 2);
+        assert!(problems.iter().any(|p| p.contains("nonsense")));
+        assert!(problems.iter().any(|p| p.contains("elsewhere")));
+    }
+
+    #[test]
+    fn nothing_in_the_config_leaves_the_shipped_keys_alone() {
+        let (map, problems) = from_toml("");
+        assert!(problems.is_empty());
+        assert_eq!(
+            map.action(Context::List, key("Enter")),
+            Some(Action::Activate)
+        );
     }
 
     #[test]
