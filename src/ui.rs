@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, Padding};
 use unicode_width::UnicodeWidthChar;
 
-use crate::dialog::{App, Focus, Row, abbreviate};
+use crate::dialog::{App, Bottom, Focus, Row, abbreviate};
 use crate::model::{self, Kind, SaveTarget};
 
 /// Slot 8 — furniture: borders, labels, sizes, key hints.
@@ -30,6 +30,10 @@ const PAD_LEFT: u16 = 2;
 const PAD_RIGHT: u16 = 4;
 /// Width of the list's pointer column.
 const POINTER: u16 = 2;
+/// Width of the mark column, in the modes that have one.
+const MARK: u16 = 2;
+/// Width of the label on the row under the listing.
+const LABEL: u16 = 8;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [body, footer] =
@@ -44,8 +48,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let inner = block.inner(body);
     frame.render_widget(block, body);
 
-    let named = app.saving();
-    let rows: &[Constraint] = if named {
+    // The jump list takes the whole box: it is a different question, and the
+    // Name field cannot be answered until it has been.
+    let bottom = if app.jump.is_some() {
+        None
+    } else {
+        app.bottom()
+    };
+    let rows: &[Constraint] = if bottom.is_some() {
         &[
             Constraint::Length(1),
             Constraint::Length(1),
@@ -65,9 +75,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_path(frame, app, areas[0]);
     rule(frame.buffer_mut(), body, areas[1].y);
     draw_list(frame, app, areas[2]);
-    if named {
+    if let Some(bottom) = bottom {
         rule(frame.buffer_mut(), body, areas[3].y);
-        draw_name(frame, app, areas[4]);
+        match bottom {
+            Bottom::Name => draw_name(frame, app, areas[4]),
+            Bottom::Writing => draw_writing(frame, app, areas[4]),
+            Bottom::Marked => draw_marked(frame, app, areas[4]),
+        }
     }
     draw_footer(frame, app, footer);
 }
@@ -94,12 +108,41 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
     let left = area.x + PAD_LEFT;
     let width = area.width.saturating_sub(PAD_LEFT + PAD_RIGHT) as usize;
 
-    if let Some(field) = &app.path {
-        let (visible, cursor) = field.view(width);
+    // The jump list and `Ctrl-L` both borrow this row for a field. Whatever is
+    // narrowing the listing belongs directly above it, and there is only ever
+    // one such thing at a time.
+    let editing = app
+        .jump
+        .as_ref()
+        .map(|jump| &jump.field)
+        .or(app.path.as_ref());
+    if let Some(field) = editing {
+        let note = app.jump.as_ref().map(|_| {
+            if app.scanning() {
+                "scanning…".to_owned()
+            } else {
+                format!("{} directories", app.dirs.len())
+            }
+        });
+        let note_width = note.as_ref().map_or(0, |note| note.chars().count() + 2);
+        let (visible, cursor) = field.view(width.saturating_sub(note_width));
         frame.render_widget(
             Line::from(Span::styled(visible.to_owned(), Style::new().fg(BRIGHT))),
             Rect { x: left, ..area },
         );
+        if let Some(note) = note {
+            let x = area
+                .right()
+                .saturating_sub(PAD_RIGHT + note.chars().count() as u16);
+            frame.render_widget(
+                Line::from(Span::styled(note, Style::new().fg(DIM))),
+                Rect {
+                    x,
+                    width: area.right().saturating_sub(x),
+                    ..area
+                },
+            );
+        }
         frame.set_cursor_position((left + cursor as u16, area.y));
         return;
     }
@@ -130,7 +173,15 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    let width = area.width.saturating_sub(PAD_LEFT + PAD_RIGHT + POINTER) as usize;
+    if app.jump.is_some() {
+        return draw_jump(frame, app, area);
+    }
+
+    let marking = app.multiple();
+    let mark_width = if marking { MARK } else { 0 };
+    let width = area
+        .width
+        .saturating_sub(PAD_LEFT + PAD_RIGHT + POINTER + mark_width) as usize;
 
     let items: Vec<ListItem> = app
         .rows
@@ -152,14 +203,34 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             };
 
+            // The mark column is blank rather than absent on an unmarked row,
+            // so nothing shifts sideways as marks come and go.
+            let mark = match row {
+                Row::Entry(i)
+                    if marking && app.marks.contains(&app.dir.join(&app.entries[*i].name)) =>
+                {
+                    "•"
+                }
+                _ => " ",
+            };
+
             let name_width = width.saturating_sub(size.chars().count() + 1);
             let label = truncate(&label, name_width);
             let gap = width.saturating_sub(label.chars().count() + size.chars().count());
-            ListItem::new(Line::from(vec![
-                Span::styled(label, Style::new().fg(if dim { DIM } else { TEXT })),
-                Span::raw(" ".repeat(gap)),
-                Span::styled(size, Style::new().fg(DIM)),
-            ]))
+            let mut spans = Vec::new();
+            if marking {
+                spans.push(Span::styled(
+                    format!("{mark} "),
+                    Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                ));
+            }
+            spans.push(Span::styled(
+                label,
+                Style::new().fg(if dim { DIM } else { TEXT }),
+            ));
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(size, Style::new().fg(DIM)));
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -181,6 +252,132 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list);
 }
 
+fn draw_jump(frame: &mut Frame, app: &mut App, area: Rect) {
+    let width = area.width.saturating_sub(PAD_LEFT + PAD_RIGHT + POINTER) as usize;
+    let App {
+        jump, dirs, home, ..
+    } = app;
+    let Some(jump) = jump else { return };
+
+    let items: Vec<ListItem> = jump
+        .shown
+        .iter()
+        .map(|i| {
+            ListItem::new(Line::from(Span::styled(
+                truncate(&abbreviate(&dirs[*i], home), width),
+                Style::new().fg(TEXT),
+            )))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::new().padding(Padding::new(PAD_LEFT, PAD_RIGHT, 0, 0)))
+        .highlight_symbol("> ")
+        .highlight_style(
+            Style::new()
+                .fg(BRIGHT)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut jump.list);
+}
+
+/// Draws the label and the right-hand hint of the row under the listing, and
+/// returns where the value goes and how much room it has.
+fn label_row(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    label_style: Style,
+    hint: &str,
+    hint_style: Style,
+) -> (u16, usize) {
+    let left = area.x + PAD_LEFT;
+    frame.render_widget(
+        Line::from(Span::styled(
+            format!("{label:<width$}", width = LABEL as usize),
+            label_style,
+        )),
+        Rect { x: left, ..area },
+    );
+
+    if !hint.is_empty() {
+        let x = area
+            .right()
+            .saturating_sub(PAD_RIGHT + hint.chars().count() as u16);
+        frame.render_widget(
+            Line::from(Span::styled(hint.to_owned(), hint_style)),
+            Rect {
+                x,
+                width: area.right().saturating_sub(x),
+                ..area
+            },
+        );
+    }
+
+    let value_x = left + LABEL;
+    let width = area
+        .right()
+        .saturating_sub(value_x + PAD_RIGHT)
+        .saturating_sub(hint.chars().count() as u16 + 2) as usize;
+    (value_x, width)
+}
+
+/// The names `SaveFiles` will write, where the Name field would be. The
+/// application chose them, so they are shown rather than offered.
+fn draw_writing(frame: &mut Frame, app: &App, area: Rect) {
+    let (names, existing) = app.writing();
+    let hint = match existing {
+        0 => String::new(),
+        1 => "1 exists".to_owned(),
+        n => format!("{n} exist"),
+    };
+    let bright = existing > 0;
+    let (x, width) = label_row(
+        frame,
+        area,
+        "Writing",
+        Style::new().fg(if bright { BRIGHT } else { DIM }),
+        &hint,
+        Style::new().fg(TEXT),
+    );
+    frame.render_widget(
+        Line::from(Span::styled(
+            truncate(&names.join(", "), width),
+            Style::new().fg(if bright { BRIGHT } else { TEXT }),
+        )),
+        Rect {
+            x,
+            width: area.right().saturating_sub(x),
+            ..area
+        },
+    );
+}
+
+fn draw_marked(frame: &mut Frame, app: &App, area: Rect) {
+    let names = app.marked();
+    let hint = format!("{} selected", names.len());
+    let (x, width) = label_row(
+        frame,
+        area,
+        "Marked",
+        Style::new().fg(DIM),
+        &hint,
+        Style::new().fg(DIM),
+    );
+    frame.render_widget(
+        Line::from(Span::styled(
+            truncate(&names.join(", "), width),
+            Style::new().fg(TEXT),
+        )),
+        Rect {
+            x,
+            width: area.right().saturating_sub(x),
+            ..area
+        },
+    );
+}
+
 fn draw_name(frame: &mut Frame, app: &App, area: Rect) {
     // Arming an overwrite changes the label as well as brightening the row.
     // A warning that only appends words to the end of a line is a mode you can
@@ -191,22 +388,15 @@ fn draw_name(frame: &mut Frame, app: &App, area: Rect) {
         ("Name", TEXT)
     };
     let hint = hint(app);
-
-    let left = area.x + PAD_LEFT;
-    let label_width = 8u16;
-    frame.render_widget(
-        Line::from(Span::styled(
-            format!("{label:<width$}", width = label_width as usize),
-            Style::new().fg(if app.armed { BRIGHT } else { DIM }),
-        )),
-        Rect { x: left, ..area },
+    let (value_x, width) = label_row(
+        frame,
+        area,
+        label,
+        Style::new().fg(if app.armed { BRIGHT } else { DIM }),
+        &hint,
+        Style::new().fg(if app.armed { TEXT } else { DIM }),
     );
 
-    let value_x = left + label_width;
-    let width = area
-        .right()
-        .saturating_sub(value_x + PAD_RIGHT)
-        .saturating_sub(hint.chars().count() as u16 + 2) as usize;
     let (visible, cursor) = app.name.view(width);
     frame.render_widget(
         Line::from(Span::styled(
@@ -223,23 +413,6 @@ fn draw_name(frame: &mut Frame, app: &App, area: Rect) {
             ..area
         },
     );
-
-    if !hint.is_empty() {
-        let x = area
-            .right()
-            .saturating_sub(PAD_RIGHT + hint.chars().count() as u16);
-        frame.render_widget(
-            Line::from(Span::styled(
-                hint,
-                Style::new().fg(if app.armed { TEXT } else { DIM }),
-            )),
-            Rect {
-                x,
-                width: area.right().saturating_sub(x),
-                ..area
-            },
-        );
-    }
 
     if app.focus == Focus::Name && app.path.is_none() {
         frame.set_cursor_position((value_x + cursor as u16, area.y));
@@ -268,20 +441,33 @@ fn hint(app: &App) -> String {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let accept = app.accept_label().to_lowercase();
     let mut keys: Vec<(&str, String)> = Vec::new();
-    if app.saving() {
-        keys.push(("Tab", "pane".to_owned()));
-        keys.push(("Enter", format!("open/{accept}")));
-    } else if app.picking_dir() {
-        keys.push(("^S", format!("{accept} here")));
-        keys.push(("Enter", "open".to_owned()));
+
+    if app.jump.is_some() {
+        keys.push(("Enter", "go".to_owned()));
+        keys.push(("Esc", "back".to_owned()));
     } else {
-        keys.push(("Enter", accept));
+        let accept = app.accept_label().to_lowercase();
+        if app.saving() {
+            keys.push(("Tab", "pane".to_owned()));
+            keys.push(("Enter", format!("open/{accept}")));
+        } else if app.picking_dir() {
+            keys.push(("^S", format!("{accept} here")));
+            keys.push(("Enter", "open".to_owned()));
+        } else {
+            keys.push(("Enter", accept));
+        }
+        if app.multiple() {
+            keys.push(("Space", "mark".to_owned()));
+        }
+        if let Some(label) = app.filter_label() {
+            keys.push(("^F", label));
+        }
+        keys.push(("^P", "jump".to_owned()));
+        keys.push(("^L", "path".to_owned()));
+        keys.push(("M-h", "hidden".to_owned()));
+        keys.push(("Esc", "cancel".to_owned()));
     }
-    keys.push(("^L", "path".to_owned()));
-    keys.push(("M-h", "hidden".to_owned()));
-    keys.push(("Esc", "cancel".to_owned()));
 
     let mut spans = vec![Span::raw("   ")];
     for (key, what) in keys {

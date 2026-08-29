@@ -6,6 +6,7 @@
 //! `read_dir` and `metadata`.
 
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
@@ -94,6 +95,48 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }
+}
+
+// ------------------------------------------------------------- walking
+
+/// Every directory under `root`, breadth-first, for the jump list.
+///
+/// Hidden directories are skipped whole. `.git`, `.cache` and `.local` hold
+/// tens of thousands of paths nobody navigates to by name, and letting them in
+/// would bury the handful of directories anyone is actually looking for.
+///
+/// Symlinks are not descended into, which is what stops a link pointing back up
+/// the tree from walking forever. `budget` caps the result for the homes where
+/// even that is not enough: a truncated jump list is worth more than a dialog
+/// that takes ten seconds to open.
+pub fn walk_dirs(root: &Path, budget: usize) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut queue = VecDeque::from([root.to_path_buf()]);
+
+    while let Some(dir) = queue.pop_front() {
+        if found.len() >= budget {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut children: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|entry| {
+                // `file_type` describes the entry itself rather than what a
+                // symlink points at, which is exactly the distinction wanted.
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && !entry.file_name().as_bytes().starts_with(b".")
+            })
+            .map(|entry| dir.join(entry.file_name()))
+            .collect();
+        // Sorted, so that two equally good matches are settled alphabetically
+        // rather than by whatever order the filesystem happened to hand back.
+        children.sort();
+        queue.extend(children.iter().cloned());
+        found.extend(children);
+    }
+    found
 }
 
 // ------------------------------------------------------------- resolution
@@ -207,10 +250,6 @@ pub fn save_target(base: &Path, home: &Path, name: &OsStr) -> SaveTarget {
 // ---------------------------------------------------------------- filters
 
 /// Deciding whether a file is one of the kinds the application asked for.
-///
-/// A module of its own so the dead-code allow it needs — nothing calls any of
-/// this until the filter UI exists — stays off the rest of the file.
-#[allow(dead_code)]
 pub mod filters {
     use crate::protocol::{Filter, FilterRule};
     use std::ffi::OsStr;
@@ -576,6 +615,34 @@ impl Fuzzy {
             .collect()
     }
 
+    /// The best `limit` of `paths` for `query`, best first.
+    ///
+    /// Ranked, unlike `visible`: these are thousands of paths nobody has looked
+    /// at, so the order is the only thing that makes the list usable at all.
+    pub fn rank(&mut self, paths: &[PathBuf], query: &str, limit: usize) -> Vec<usize> {
+        if query.is_empty() {
+            return (0..paths.len().min(limit)).collect();
+        }
+        let pattern = nucleo_matcher::pattern::Pattern::parse(
+            query,
+            nucleo_matcher::pattern::CaseMatching::Smart,
+            nucleo_matcher::pattern::Normalization::Smart,
+        );
+
+        let mut scored: Vec<(u32, usize)> = paths
+            .iter()
+            .enumerate()
+            .filter_map(|(i, path)| {
+                self.score(&pattern, path.as_os_str())
+                    .map(|score| (score, i))
+            })
+            .collect();
+        // Ties go to the earlier candidate, and the walk hands them over
+        // breadth-first, so the shallower of two equally good matches wins.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().take(limit).map(|(_, i)| i).collect()
+    }
+
     fn score(&mut self, pattern: &nucleo_matcher::pattern::Pattern, name: &OsStr) -> Option<u32> {
         let Self { matcher, buf } = self;
         let text = name.to_string_lossy();
@@ -788,6 +855,84 @@ mod tests {
         let entries = list_dir(dir.path()).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().filter(|e| e.hidden).count() == 1);
+    }
+
+    // -- walking
+
+    #[test]
+    fn the_walk_finds_directories_at_every_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Pictures/holiday/bern")).unwrap();
+        std::fs::write(dir.path().join("Pictures/a.png"), b"x").unwrap();
+
+        let found: Vec<_> = walk_dirs(dir.path(), 100)
+            .iter()
+            .map(|p| p.strip_prefix(dir.path()).unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            found,
+            [
+                PathBuf::from("Pictures"),
+                PathBuf::from("Pictures/holiday"),
+                PathBuf::from("Pictures/holiday/bern"),
+            ]
+        );
+    }
+
+    #[test]
+    fn hidden_directories_are_skipped_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".cache/huge/deeper")).unwrap();
+        std::fs::create_dir(dir.path().join("Documents")).unwrap();
+
+        let found = walk_dirs(dir.path(), 100);
+        assert_eq!(found, [dir.path().join("Documents")]);
+    }
+
+    #[test]
+    fn a_symlink_looping_back_up_does_not_walk_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("a/up")).unwrap();
+
+        let found = walk_dirs(dir.path(), 100);
+        assert_eq!(found, [dir.path().join("a")]);
+    }
+
+    #[test]
+    fn the_budget_caps_the_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            std::fs::create_dir(dir.path().join(format!("d{i}"))).unwrap();
+        }
+        assert_eq!(walk_dirs(dir.path(), 4).len(), 10);
+        assert!(walk_dirs(dir.path(), 0).is_empty());
+    }
+
+    // -- ranking
+
+    #[test]
+    fn the_jump_list_ranks_and_the_shallower_path_wins_a_tie() {
+        let paths = [
+            PathBuf::from("/home/me/Pictures"),
+            PathBuf::from("/home/me/Documents/notes"),
+            PathBuf::from("/home/me/Pictures/holiday/pictures"),
+        ];
+        let mut fuzzy = Fuzzy::default();
+        let got = fuzzy.rank(&paths, "pictures", 10);
+        assert_eq!(got[0], 0);
+        assert!(!got.contains(&1));
+    }
+
+    #[test]
+    fn an_empty_jump_query_keeps_the_order_the_walk_gave() {
+        let paths = [
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/c"),
+        ];
+        let mut fuzzy = Fuzzy::default();
+        assert_eq!(fuzzy.rank(&paths, "", 2), [0, 1]);
     }
 
     #[test]

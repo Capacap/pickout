@@ -14,10 +14,10 @@ that cost time the first time round. This file is where it currently stands.
 
 ## State
 
-Both halves work. The interface is the single screen the design asks for —
-browser and Name field visible at once, both live — for `OpenFile`, `SaveFile`,
-`SaveFiles` and directory mode. Still to come: filters honoured in the list,
-`Ctrl-P` fuzzy directory jump, and multi-select.
+Both halves work, and everything the portal interface can ask for is answered.
+The interface is the single screen the design asks for — browser and Name field
+visible at once, both live. What is left is dogfooding: routing this machine's
+file dialogs to filepick and living with it.
 
 Working:
 
@@ -37,8 +37,14 @@ Working:
   a path, a live Name field that says what committing would do — `exists`,
   `creates 2 directories`, `is a directory` — and takes two `Enter`s to
   overwrite
-
-Not built: filters applied to the listing, `^P` jump, multi-select.
+- the application's filters applied to the listing, `^F` to cycle them, and an
+  "all files" entry of filepick's own so a filter can always be got out of
+- `^P`: every directory under `$HOME`, ranked as you type, walked in the
+  background so the dialog opens at once
+- `Space` to mark, in the modes that take more than one answer; marks survive
+  changing directory
+- `SaveFiles`: the names the application is about to write, and how many of them
+  already exist in the directory the cursor is on
 
 ## Keys
 
@@ -48,10 +54,12 @@ Not built: filters applied to the listing, `^P` jump, multi-select.
 | `Tab` | to the Name field | back to the list |
 | `Left` / `Right` | up a directory / descend | — |
 | typing | filters the listing | edits the name |
+| `Space` | marks the row, where more than one answer is wanted | a space |
 | `Esc` | clears the filter, then cancels | cancels |
 
-`^S` commits from anywhere, `^L` makes the path bar editable, `M-h` toggles
-dotfiles, `^W` / `^U` / `^K` / `^A` / `^E` edit as readline does.
+`^S` commits from anywhere, `^P` opens the jump list, `^F` cycles the
+application's filters, `^L` makes the path bar editable, `M-h` toggles dotfiles,
+`^W` / `^U` / `^K` / `^A` / `^E` edit as readline does.
 
 `Enter` means two things, but never in one place: in the list it descends, in
 the Name field it commits. Meaning both in one place is what made the browser

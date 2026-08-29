@@ -29,6 +29,7 @@ mkdir -p "$tmp/Pictures/Screenshots" "$tmp/Pictures/ref"
 head -c 31500 /dev/urandom > "$tmp/Pictures/bern_copy.corkboard"
 head -c 1200000 /dev/urandom > "$tmp/Pictures/photo.png"
 head -c 900 /dev/urandom > "$tmp/Pictures/.hidden_note"
+head -c 10 /dev/urandom > "$tmp/Pictures/ref/one.txt"
 
 passed=0
 failed=0
@@ -85,6 +86,46 @@ request many '{
   "current_filter": null
 }'
 
+request filtered '{
+  "mode": {"open_file": {"multiple": false}},
+  "title": "Open image",
+  "accept_label": null,
+  "start_dir": "'"$tmp"'/Pictures",
+  "current_name": null,
+  "filters": [
+    {"label": "Images", "rules": [{"glob": "*.png"}]},
+    {"label": "Boards", "rules": [{"glob": "*.corkboard"}]}
+  ],
+  "current_filter": 0
+}'
+request untitled '{
+  "mode": "save_file",
+  "title": "Save image",
+  "accept_label": null,
+  "start_dir": "'"$tmp"'/Pictures",
+  "current_name": "Untitled",
+  "filters": [{"label": "Images", "rules": [{"glob": "*.png"}]}],
+  "current_filter": 0
+}'
+request multi '{
+  "mode": {"open_file": {"multiple": true}},
+  "title": "Open boards",
+  "accept_label": null,
+  "start_dir": "'"$tmp"'/Pictures",
+  "current_name": null,
+  "filters": [],
+  "current_filter": null
+}'
+request dirs '{
+  "mode": {"open_directory": {"multiple": true}},
+  "title": "Choose folders",
+  "accept_label": null,
+  "start_dir": "'"$tmp"'/Pictures",
+  "current_name": null,
+  "filters": [],
+  "current_filter": null
+}'
+
 # run <request> <keys> — leaves the screen in $out and the answer in $answer.
 run() {
     rm -f "$tmp/response.json"
@@ -97,6 +138,20 @@ run() {
 # The content of one screen row, without the border or its padding.
 row() {
     sed -n "${1}p" "$tmp/screen.txt" | sed -e 's/^│ *//' -e 's/ *│$//' -e 's/  */ /g'
+}
+
+footer() {
+    sed -n '40p' "$tmp/screen.txt" | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g'
+}
+
+filter_of() { # the filter index the response came back with
+    python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("filter"))
+except OSError:
+    print("<no response>")
+' "$tmp/response.json"
 }
 
 paths() { # the paths in the response, with $HOME written back as ~
@@ -210,8 +265,8 @@ echo "the other modes"
 
 run open ''
 check "open mode has no name field" "" "$(row 38)"
-check "and says so in the footer" "Enter open ^L path M-h hidden Esc cancel" \
-    "$(sed -n '40p' "$tmp/screen.txt" | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g')"
+check "and says so in the footer" "Enter open ^P jump ^L path M-h hidden Esc cancel" \
+    "$(footer)"
 
 run open '\x1b[B\x1b[B\x00\r'
 check "Enter on a file opens it" "~/Pictures/bern_copy.corkboard" "$(paths)"
@@ -229,8 +284,85 @@ run many '\x13'
 check "SaveFiles answers with the application's names" \
     "~/Pictures/ref/one.txt ~/Pictures/ref/two.txt" "$(paths)"
 check "the accept label loses its mnemonic and joins the other hints" \
-    "^S export here Enter open ^L path M-h hidden Esc cancel" \
-    "$(sed -n '40p' "$tmp/screen.txt" | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g')"
+    "^S export here Enter open ^P jump ^L path M-h hidden Esc cancel" \
+    "$(footer)"
+
+run many '\x1b[B'
+check "SaveFiles shows the names it is about to write" \
+    "Writing one.txt, two.txt" "$(row 38)"
+
+run many ''
+check "and counts the ones already in the directory it would write them to" \
+    "Writing one.txt, two.txt 1 exists" "$(row 38)"
+
+echo
+echo "filters"
+
+run filtered ''
+check "a filter hides the files it does not name" "photo.png 1.2 MB" "$(row 7)"
+check "leaving nothing below them" "" "$(row 8)"
+check "directories stay visible under a filter" "Screenshots/" "$(row 6)"
+check "the footer names the filter in force" \
+    "Enter open ^F Images ^P jump ^L path M-h hidden Esc cancel" "$(footer)"
+
+run filtered '\x06'
+check "^F moves to the next filter" "bern_copy.corkboard 31.5 kB" "$(row 7)"
+
+run filtered '\x06\x00\x06'
+check "and then to filepick's own all files" \
+    "Enter open ^F all files ^P jump ^L path M-h hidden Esc cancel" "$(footer)"
+check "which is the whole listing back" "bern_copy.corkboard 31.5 kB" "$(row 7)"
+check "every bit of it" "photo.png 1.2 MB" "$(row 8)"
+
+run filtered '\x06\x00\x1b[B\x1b[B\x00\r'
+check "the response carries the filter ended on" "1" "$(filter_of)"
+
+run untitled ''
+check "a name with no extension gains the filter's" "Name Untitled.png" "$(row 38)"
+
+echo
+echo "more than one answer"
+
+run multi ''
+check "nothing is marked to begin with" "" "$(row 38)"
+
+run multi '\x1b[B\x1b[B\x00 '
+check "Space marks the row and steps past it" "• bern_copy.corkboard 31.5 kB" "$(row 7)"
+check "and the row under the listing says what is marked" \
+    "Marked bern_copy.corkboard 1 selected" "$(row 38)"
+
+run multi '\x1b[B\x1b[B\x00 \x00 \x00\x13'
+check "^S answers with the marks" \
+    "~/Pictures/bern_copy.corkboard ~/Pictures/photo.png" "$(paths)"
+
+run multi '\x1b[B\x1b[B\x00 \x00\r'
+check "Enter answers with the marks and the row it is aimed at" \
+    "~/Pictures/bern_copy.corkboard ~/Pictures/photo.png" "$(paths)"
+
+run multi ' '
+check "a directory cannot be marked when files are wanted" "" "$(row 38)"
+
+run dirs ' \x00 \x00\x13'
+check "and directories can be, when they are" \
+    "~/Pictures/Screenshots ~/Pictures/ref" "$(paths)"
+
+echo
+echo "the jump list"
+
+run save '\x10'
+check "^P lists every directory under home" "> ~/Pictures" "$(row 4)"
+check "breadth-first, so the shallow ones come first" "~/Pictures/Screenshots" "$(row 5)"
+check "and the bar above says how many there are" "3 directories" "$(row 2)"
+check "the footer says what the list is for" "Enter go Esc back" "$(footer)"
+
+run save '\x10\x00ref'
+check "typing narrows it" "> ~/Pictures/ref" "$(row 4)"
+
+run save '\x10\x00ref\x00\r'
+check "Enter goes there" "~/Pictures/ref" "$(row 2)"
+
+run save '\x10\x00\x1b'
+check "Esc comes back to the browser" "~/Pictures" "$(row 2)"
 
 echo
 printf '%d passed, %d failed\n\n' "$passed" "$failed"

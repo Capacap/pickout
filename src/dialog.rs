@@ -5,8 +5,11 @@
 //! browser can only answer the first, which is why saving through one never
 //! worked.
 
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -15,8 +18,15 @@ use ratatui::widgets::ListState;
 
 use crate::field::Field;
 use crate::model::{self, Entry, Fuzzy, Kind, SaveTarget};
-use crate::protocol::{Mode, Request, Response, WirePath};
+use crate::protocol::{Filter, Mode, Request, Response, WirePath};
 use crate::ui;
+
+/// How many directories the jump list will hold. A home directory with a
+/// monorepo checked out has more, and the ones past this point are build trees
+/// nobody jumps to by name.
+const JUMP_BUDGET: usize = 40_000;
+/// How many of them are ranked onto the screen at once.
+const JUMP_SHOWN: usize = 200;
 
 pub fn run(request_path: &Path, response_path: &Path) -> Result<()> {
     let raw = std::fs::read(request_path)
@@ -39,6 +49,25 @@ pub enum Focus {
     Name,
 }
 
+/// What the row under the listing is for, when there is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bottom {
+    /// The Name field: the second question a save asks.
+    Name,
+    /// The names the application is about to write, under `SaveFiles`.
+    Writing,
+    /// What has been marked, in the modes that take more than one answer.
+    Marked,
+}
+
+/// The `Ctrl-P` jump list, borrowing the path bar for its query.
+pub struct Jump {
+    pub field: Field,
+    /// Indices into `App::dirs`, best first.
+    pub shown: Vec<usize>,
+    pub list: ListState,
+}
+
 /// A line in the browser. `..` is not an entry on disk, and keeping it out of
 /// the listing means filtering never has to remember to exempt it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +85,18 @@ pub struct App {
     pub list: ListState,
     pub query: String,
     pub name: Field,
+    /// Which of the application's filters is in force. `None` is filepick's own
+    /// "all files": the portal has no such entry, but being unable to see a
+    /// file you know is there is worse than a filter that lapses.
+    pub filter: Option<usize>,
+    /// Paths marked with `Space`. Marks survive changing directory — answering
+    /// with files from one directory only is a limitation of the dialogs this
+    /// replaces, not something worth copying.
+    pub marks: BTreeSet<PathBuf>,
+    /// Every directory under `$HOME`, once the walk has finished.
+    pub dirs: Vec<PathBuf>,
+    /// Some while the jump list is open, under `Ctrl-P`.
+    pub jump: Option<Jump>,
     /// Some when the path bar is being edited, under `Ctrl-L`.
     pub path: Option<Field>,
     pub focus: Focus,
@@ -66,6 +107,7 @@ pub struct App {
     pub target: SaveTarget,
     pub message: Option<String>,
     fuzzy: Fuzzy,
+    scan: Option<mpsc::Receiver<Vec<PathBuf>>>,
     done: Option<Response>,
 }
 
@@ -76,6 +118,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/"));
         let dir = request.start_dir.to_path_buf();
         let name = Field::new(request.current_name.clone().unwrap_or_default());
+        let request_filter = request.current_filter;
 
         let mut app = Self {
             focus: if request.current_name.is_some() {
@@ -91,17 +134,37 @@ impl App {
             list: ListState::default(),
             query: String::new(),
             name,
+            filter: request_filter,
+            marks: BTreeSet::new(),
+            dirs: Vec::new(),
+            jump: None,
             path: None,
             show_hidden: false,
             armed: false,
             target: SaveTarget::Empty,
             message: None,
             fuzzy: Fuzzy::default(),
+            scan: None,
             done: None,
         };
         app.list.select(None);
         app.reload(None);
+        app.suggest_extension();
         Ok(app)
+    }
+
+    /// `Untitled` under a `*.png` filter becomes `Untitled.png`. Only ever
+    /// added, never swapped, so a name that already says what it is survives —
+    /// and so does the extension the application itself chose.
+    fn suggest_extension(&mut self) {
+        if !self.saving() || self.name.text().is_empty() || self.name.text().contains('.') {
+            return;
+        }
+        let extension: Option<String> = self.active_filter().and_then(model::filters::extension);
+        if let Some(extension) = extension {
+            self.name.set(format!("{}.{extension}", self.name.text()));
+            self.refresh_target();
+        }
     }
 
     // ------------------------------------------------------------- queries
@@ -118,6 +181,90 @@ impl App {
             self.request.mode,
             Mode::OpenDirectory { .. } | Mode::SaveFiles { .. }
         )
+    }
+
+    /// Whether the request takes more than one answer.
+    pub fn multiple(&self) -> bool {
+        matches!(
+            self.request.mode,
+            Mode::OpenFile { multiple: true } | Mode::OpenDirectory { multiple: true }
+        )
+    }
+
+    pub fn scanning(&self) -> bool {
+        self.scan.is_some()
+    }
+
+    /// What the row under the listing says, if anything.
+    pub fn bottom(&self) -> Option<Bottom> {
+        if self.saving() {
+            Some(Bottom::Name)
+        } else if matches!(self.request.mode, Mode::SaveFiles { .. }) {
+            Some(Bottom::Writing)
+        } else if !self.marks.is_empty() {
+            Some(Bottom::Marked)
+        } else {
+            None
+        }
+    }
+
+    pub fn active_filter(&self) -> Option<&Filter> {
+        self.filter.and_then(|i| self.request.filters.get(i))
+    }
+
+    /// The name of the filter in force, or `None` when the application sent no
+    /// filters and there is nothing to cycle.
+    pub fn filter_label(&self) -> Option<String> {
+        if self.request.filters.is_empty() {
+            return None;
+        }
+        Some(match self.active_filter() {
+            Some(filter) => filter.label.clone(),
+            None => "all files".to_owned(),
+        })
+    }
+
+    /// The directory a commit would answer with: the one under the cursor if
+    /// the cursor is on one, otherwise the one being browsed.
+    pub fn chosen_dir(&self) -> PathBuf {
+        match self.selected() {
+            Some(Row::Entry(i)) if self.entries[i].kind == Kind::Dir => self.entry_path(i),
+            _ => self.dir.clone(),
+        }
+    }
+
+    /// The names `SaveFiles` is about to write, and how many of them already
+    /// exist where they would go. Knowing that before choosing the directory is
+    /// the whole reason the preview is on screen.
+    pub fn writing(&self) -> (Vec<String>, usize) {
+        let Mode::SaveFiles { names } = &self.request.mode else {
+            return (Vec::new(), 0);
+        };
+        let dir = self.chosen_dir();
+        let mut existing = 0;
+        let names = names
+            .iter()
+            .map(|name| {
+                let name = name.to_path_buf();
+                if dir.join(&name).exists() {
+                    existing += 1;
+                }
+                name.display().to_string()
+            })
+            .collect();
+        (names, existing)
+    }
+
+    pub fn marked(&self) -> Vec<String> {
+        self.marks
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
     }
 
     pub fn title(&self) -> String {
@@ -187,6 +334,18 @@ impl App {
         let visible = self
             .fuzzy
             .visible(&self.entries, &self.query, self.show_hidden);
+        // Directories are never filtered out. A filter says which files the
+        // application can read, and hiding the way to them would make a filter
+        // that matches nothing here into a dialog with no way forward.
+        let filter = self.filter.and_then(|i| self.request.filters.get(i));
+        let visible: Vec<usize> = visible
+            .into_iter()
+            .filter(|i| {
+                let entry = &self.entries[*i];
+                entry.kind == Kind::Dir
+                    || filter.is_none_or(|filter| model::filters::matches(filter, &entry.name))
+            })
+            .collect();
         self.rows.clear();
         if self.dir.parent().is_some() {
             self.rows.push(Row::Parent);
@@ -205,6 +364,18 @@ impl App {
             .iter()
             .position(|row| matches!(row, Row::Entry(_)))
             .unwrap_or(0)
+    }
+
+    fn cycle_filter(&mut self) {
+        if self.request.filters.is_empty() {
+            return;
+        }
+        self.filter = match self.filter {
+            None => Some(0),
+            Some(i) if i + 1 < self.request.filters.len() => Some(i + 1),
+            Some(_) => None,
+        };
+        self.refilter();
     }
 
     fn refresh_target(&mut self) {
@@ -226,6 +397,24 @@ impl App {
         self.list.select(Some((at + delta).clamp(0, last) as usize));
     }
 
+    /// `Space`. Only the kind of thing the request is asking for can be marked:
+    /// marking a file in a directory chooser would promise an answer the portal
+    /// has no way to give.
+    fn toggle_mark(&mut self) {
+        let Some(Row::Entry(i)) = self.selected() else {
+            return;
+        };
+        let is_dir = self.entries[i].kind == Kind::Dir;
+        if is_dir != self.picking_dir() {
+            return;
+        }
+        let path = self.entry_path(i);
+        if !self.marks.remove(&path) {
+            self.marks.insert(path);
+        }
+        self.move_by(1);
+    }
+
     fn go_to(&mut self, dir: PathBuf, keep: Option<OsString>) {
         self.dir = dir;
         self.query.clear();
@@ -240,6 +429,60 @@ impl App {
         }
     }
 
+    // ------------------------------------------------------------- jumping
+
+    fn open_jump(&mut self) {
+        if self.dirs.is_empty() && self.scan.is_none() {
+            let (tx, rx) = mpsc::channel();
+            let home = self.home.clone();
+            // The walk is the one thing here slow enough to be felt on a large
+            // home directory, so it runs beside the dialog rather than in front
+            // of it, and the list fills in when it arrives.
+            std::thread::spawn(move || {
+                let _ = tx.send(model::walk_dirs(&home, JUMP_BUDGET));
+            });
+            self.scan = Some(rx);
+        }
+        self.jump = Some(Jump {
+            field: Field::default(),
+            shown: Vec::new(),
+            list: ListState::default(),
+        });
+        self.rejump();
+    }
+
+    fn rejump(&mut self) {
+        let Self {
+            jump, fuzzy, dirs, ..
+        } = self;
+        let Some(jump) = jump else { return };
+        jump.shown = fuzzy.rank(dirs, jump.field.text(), JUMP_SHOWN);
+        jump.list.select((!jump.shown.is_empty()).then_some(0));
+    }
+
+    fn collect_scan(&mut self) {
+        let Some(rx) = &self.scan else { return };
+        match rx.try_recv() {
+            Ok(dirs) => {
+                self.dirs = dirs;
+                self.scan = None;
+                self.rejump();
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => self.scan = None,
+        }
+    }
+
+    fn jump_move(&mut self, delta: isize) {
+        let Some(jump) = &mut self.jump else { return };
+        if jump.shown.is_empty() {
+            return;
+        }
+        let last = jump.shown.len() as isize - 1;
+        let at = jump.list.selected().unwrap_or(0) as isize;
+        jump.list.select(Some((at + delta).clamp(0, last) as usize));
+    }
+
     // ------------------------------------------------------------ answering
 
     fn cancel(&mut self) {
@@ -249,7 +492,7 @@ impl App {
     fn answer(&mut self, paths: Vec<PathBuf>) {
         self.done = Some(Response::Selected {
             paths: paths.iter().map(WirePath::from).collect(),
-            filter: self.request.current_filter,
+            filter: self.filter,
         });
     }
 
@@ -273,8 +516,16 @@ impl App {
                 self.refresh_target();
             }
             Some(Row::Entry(i)) if !self.picking_dir() => {
+                // `Enter` is a positive act on this row, so it answers with the
+                // marks and this file both: marking three and pressing Enter on
+                // a fourth means all four.
                 let path = self.entry_path(i);
-                self.answer(vec![path]);
+                let mut paths: Vec<PathBuf> = self.marks.iter().cloned().collect();
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+                paths.sort();
+                self.answer(paths);
             }
             Some(Row::Entry(_)) => {}
         }
@@ -282,6 +533,13 @@ impl App {
 
     /// `Ctrl-S`, and `Enter` in the Name field.
     fn commit(&mut self) {
+        // Marks are the answer whenever there are any. Unlike `Enter` on a row,
+        // this is not aimed at anything, so it takes what was chosen
+        // deliberately and not whatever the cursor is resting on.
+        if self.multiple() && !self.marks.is_empty() {
+            let paths = self.marks.iter().cloned().collect();
+            return self.answer(paths);
+        }
         if self.picking_dir() {
             return self.commit_directory();
         }
@@ -325,10 +583,7 @@ impl App {
     }
 
     fn commit_directory(&mut self) {
-        let dir = match self.selected() {
-            Some(Row::Entry(i)) if self.entries[i].kind == Kind::Dir => self.entry_path(i),
-            _ => self.dir.clone(),
-        };
+        let dir = self.chosen_dir();
         match &self.request.mode {
             Mode::SaveFiles { names } => {
                 let paths = names
@@ -347,7 +602,12 @@ impl App {
         let _ = execute!(std::io::stdout(), SetTitle(self.title()));
 
         while self.done.is_none() {
+            self.collect_scan();
             terminal.draw(|frame| ui::draw(frame, self))?;
+            // A walk in flight is the only reason to wake without a keypress.
+            if self.scan.is_some() && !event::poll(Duration::from_millis(60))? {
+                continue;
+            }
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
                 _ => {}
@@ -363,11 +623,16 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return self.cancel();
         }
+        if self.jump.is_some() {
+            return self.on_jump_key(key);
+        }
         if self.path.is_some() {
             return self.on_path_key(key);
         }
 
         match key.code {
+            KeyCode::Char('p') if ctrl => return self.open_jump(),
+            KeyCode::Char('f') if ctrl => return self.cycle_filter(),
             KeyCode::Char('l') if ctrl => {
                 self.path = Some(Field::new(abbreviate(&self.dir, &self.home)));
                 return;
@@ -407,6 +672,7 @@ impl App {
                 self.refilter();
             }
             KeyCode::Esc => self.cancel(),
+            KeyCode::Char(' ') if self.multiple() => self.toggle_mark(),
             KeyCode::Enter | KeyCode::Right => self.activate(),
             KeyCode::Left => self.go_to_parent(),
             KeyCode::Up => self.move_by(-1),
@@ -444,6 +710,37 @@ impl App {
             // first one warned about.
             self.armed = false;
             self.refresh_target();
+        }
+    }
+
+    fn on_jump_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Esc => return self.jump = None,
+            KeyCode::Char('p') if ctrl => return self.jump = None,
+            KeyCode::Up => return self.jump_move(-1),
+            KeyCode::Down => return self.jump_move(1),
+            KeyCode::PageUp => return self.jump_move(-10),
+            KeyCode::PageDown => return self.jump_move(10),
+            KeyCode::Enter => {
+                let chosen = self.jump.as_ref().and_then(|jump| {
+                    let at = jump.list.selected()?;
+                    self.dirs.get(*jump.shown.get(at)?).cloned()
+                });
+                self.jump = None;
+                if let Some(dir) = chosen {
+                    self.go_to(dir, None);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        if let Some(jump) = &mut self.jump
+            && jump.field.handle(key)
+        {
+            self.rejump();
         }
     }
 
