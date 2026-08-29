@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# What this machine uses, not the only way in. The four files it writes are
+# described in the README; anyone packaging filepick or wiring it into a
+# different session is expected to place them their own way.
+#
 # Installs filepick into the user's XDG directories and registers it as a
 # portal backend. Nothing is installed system-wide and nothing is overwritten
 # outside the paths listed at the end.
@@ -34,8 +38,13 @@ render "$here/data/org.freedesktop.impl.portal.desktop.filepick.service.in" \
 render "$here/data/filepick.service.in" \
        "$config/systemd/user/filepick.service"
 
-systemctl --user daemon-reload
-systemctl --user restart filepick.service 2>/dev/null || true
+# Only a convenience: the D-Bus service file above starts the daemon on demand
+# with or without systemd, so a machine that has no user manager is not missing
+# anything but `systemctl status`.
+if command -v systemctl >/dev/null; then
+    systemctl --user daemon-reload || true
+    systemctl --user restart filepick.service 2>/dev/null || true
+fi
 
 cat <<MSG
 
@@ -49,7 +58,8 @@ filepick is registered but not yet routed. To send file dialogs to it, set
 
   org.freedesktop.impl.portal.FileChooser=filepick;
 
-in $config/xdg-desktop-portal/niri-portals.conf, then
+in $config/xdg-desktop-portal/portals.conf, or in the <desktop>-portals.conf
+for the session in use — niri-portals.conf on this machine — then
 
   systemctl --user restart xdg-desktop-portal.service
 

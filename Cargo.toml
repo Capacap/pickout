@@ -2,6 +2,8 @@
 name = "filepick"
 version = "0.1.0"
 edition = "2024"
+# Let-chains, used throughout the dialog.
+rust-version = "1.88"
 
 [dependencies]
 ashpd = { version = "0.13", default-features = false, features = [
