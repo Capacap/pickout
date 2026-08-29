@@ -1,0 +1,11 @@
+[Unit]
+Description=filepick (terminal file chooser portal backend)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.filepick
+ExecStart=@BINARY@ --serve
+Restart=on-failure
+Slice=session.slice
