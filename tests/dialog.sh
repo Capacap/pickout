@@ -30,6 +30,9 @@ head -c 31500 /dev/urandom > "$tmp/Pictures/bern_copy.corkboard"
 head -c 1200000 /dev/urandom > "$tmp/Pictures/photo.png"
 head -c 900 /dev/urandom > "$tmp/Pictures/.hidden_note"
 head -c 10 /dev/urandom > "$tmp/Pictures/ref/one.txt"
+# The same name in two directories, so that arming an overwrite and then
+# walking away from it has something to walk into.
+head -c 20 /dev/urandom > "$tmp/Pictures/ref/photo.png"
 
 passed=0
 failed=0
@@ -246,6 +249,12 @@ check "the second Enter goes through" "~/Pictures/photo.png" "$(paths)"
 
 run save '\x15photo.png\x00\r\x00x\x00\r'
 check "editing the name disarms it" "~/Pictures/photo.pngx" "$(paths)"
+
+run save '\x15photo.png\x00\r\x00\t\x00\r\x00\t\x00\r'
+check "so does changing directory, where the same name exists" "<no response>" "$(paths)"
+
+run save '\x15photo.png\x00\r\x00\t\x00\r\x00\t\x00\r\x00\r'
+check "and the confirmation there is its own" "~/Pictures/ref/photo.png" "$(paths)"
 
 run save '\x15deep/er/a.txt\x00\r'
 check "committing makes the missing directories" "~/Pictures/deep/er/a.txt" "$(paths)"

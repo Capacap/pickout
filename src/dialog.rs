@@ -378,7 +378,12 @@ impl App {
         self.refilter();
     }
 
+    /// Recomputes what committing would write, which is also what un-arms an
+    /// overwrite: the arming belongs to one target, so a new one cannot inherit
+    /// it. Changing directory recomputes the target too, which is the case that
+    /// scattering this over the call sites got wrong.
     fn refresh_target(&mut self) {
+        self.armed = false;
         self.target = if self.saving() {
             model::save_target(&self.dir, &self.home, OsStr::new(self.name.text()))
         } else {
@@ -512,7 +517,6 @@ impl App {
                 self.name
                     .set(self.entries[i].name.to_string_lossy().into_owned());
                 self.focus = Focus::Name;
-                self.armed = false;
                 self.refresh_target();
             }
             Some(Row::Entry(i)) if !self.picking_dir() => {
@@ -708,10 +712,6 @@ impl App {
             _ => {}
         }
         if self.name.handle(key) {
-            // Anything that changes what would be written un-arms the
-            // overwrite, so the second Enter can only ever confirm the name the
-            // first one warned about.
-            self.armed = false;
             self.refresh_target();
         }
     }
@@ -785,7 +785,6 @@ impl App {
         if self.saving() {
             self.name.set(name.to_string_lossy().into_owned());
             self.focus = Focus::Name;
-            self.armed = false;
             self.refresh_target();
         }
     }
