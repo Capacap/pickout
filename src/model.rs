@@ -86,7 +86,10 @@ pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
+    // 999.95, not 1000.0: the value is shown to one decimal place, so the
+    // comparison has to be against what rounding will produce. 999 999 B is
+    // "1000.0 kB" under the obvious threshold, a whole unit late.
+    while value >= 999.95 && unit + 1 < UNITS.len() {
         value /= 1000.0;
         unit += 1;
     }
@@ -942,5 +945,9 @@ mod tests {
         assert_eq!(format_size(1000), "1.0 kB");
         assert_eq!(format_size(31_500), "31.5 kB");
         assert_eq!(format_size(1_200_000), "1.2 MB");
+        // Rounding to one decimal place crosses the boundary the loop does not.
+        assert_eq!(format_size(999_949), "999.9 kB");
+        assert_eq!(format_size(999_950), "1.0 MB");
+        assert_eq!(format_size(999_999), "1.0 MB");
     }
 }
