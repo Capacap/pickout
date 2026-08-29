@@ -6,6 +6,7 @@
 //! types rather than an undocumented argv convention.
 
 mod dialog;
+mod model;
 mod portal;
 mod protocol;
 mod terminal;

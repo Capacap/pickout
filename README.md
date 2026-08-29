@@ -14,9 +14,10 @@ that cost time the first time round. This file is where it currently stands.
 
 ## State
 
-The portal half is done and proven end to end. The dialog half is a stub that
-answers without asking anyone; the interface described in `HANDOFF.md` is not
-built yet.
+The portal half is done and proven end to end. The logic the chooser will sit
+on — listing, path resolution, filter matching — is written and tested. What is
+missing is the interface itself: `src/dialog.rs` is still a stub that answers
+without asking anyone.
 
 Working:
 
@@ -29,13 +30,16 @@ Working:
 - cancel, a dialog that writes nothing, a dialog that dies, and an application
   that withdraws its request mid-dialog — all answered as a cancel, and the
   last of those takes the terminal down with it
+- `src/model.rs`: directory listing, `~` expansion, names carrying `/`,
+  relative fragments, what a typed name would overwrite or have to create,
+  glob and MIME filter matching
 
-Not built: the dialog itself (`src/dialog.rs` is a placeholder).
+Not built: the interface (`src/dialog.rs` is a placeholder).
 
 ## Build and test
 
 ```sh
-cargo test         # pure logic: the wire protocol, URIs, directory policy
+cargo test         # pure logic: wire protocol, URIs, directory policy, the model
 tests/portal.sh    # the D-Bus backend, on a private bus, no window, no human
 ```
 
