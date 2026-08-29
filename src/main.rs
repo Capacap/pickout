@@ -8,6 +8,7 @@
 mod config;
 mod dialog;
 mod field;
+mod keys;
 mod model;
 mod portal;
 mod protocol;

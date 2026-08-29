@@ -12,11 +12,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::crossterm::{execute, terminal::SetTitle};
 use ratatui::widgets::ListState;
 
 use crate::field::Field;
+use crate::keys::{self, Action, Key, Keymap};
 use crate::model::{self, Entry, Fuzzy, Kind, SaveTarget};
 use crate::protocol::{Filter, Mode, Request, Response, WirePath};
 use crate::ui;
@@ -106,6 +107,7 @@ pub struct App {
     pub armed: bool,
     pub target: SaveTarget,
     pub message: Option<String>,
+    pub keys: Keymap,
     fuzzy: Fuzzy,
     scan: Option<mpsc::Receiver<Vec<PathBuf>>>,
     done: Option<Response>,
@@ -147,6 +149,7 @@ impl App {
             armed: false,
             target: SaveTarget::Empty,
             message: None,
+            keys: Keymap::default(),
             fuzzy: Fuzzy::default(),
             scan: None,
             done: None,
@@ -627,110 +630,200 @@ impl App {
         Ok(self.done.take().unwrap_or(Response::Cancelled))
     }
 
-    fn on_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
+    /// Where a key is looked up. The overlays come first because they are the
+    /// question actually on screen; the browser is still drawn behind them, but
+    /// it is not what is being answered.
+    pub fn context(&self) -> keys::Context {
+        if self.jump.is_some() {
+            keys::Context::Jump
+        } else if self.path.is_some() {
+            keys::Context::Path
+        } else {
+            match self.focus {
+                Focus::List => keys::Context::List,
+                Focus::Name => keys::Context::Name,
+            }
+        }
+    }
 
-        if ctrl && key.code == KeyCode::Char('c') {
+    fn on_key(&mut self, event: KeyEvent) {
+        let key = Key::from_event(event);
+
+        // Not in the table on purpose. A way out that a config file can take
+        // away is not a way out.
+        if key == Key::interrupt() {
             return self.cancel();
         }
-        if self.jump.is_some() {
-            return self.on_jump_key(key);
-        }
-        if self.path.is_some() {
-            return self.on_path_key(key);
-        }
 
-        match key.code {
-            KeyCode::Char('p') if ctrl => return self.open_jump(),
-            KeyCode::Char('f') if ctrl => return self.cycle_filter(),
-            KeyCode::Char('l') if ctrl => {
-                self.path = Some(Field::new(abbreviate(&self.dir, &self.home)));
-                return;
+        let context = self.context();
+        match self.keys.action(context, key) {
+            // A binding that does not apply here is not a binding here: `Space`
+            // marks nothing in a single-answer dialog, so it goes on to type a
+            // space into the filter, which is what an unbound key does.
+            Some(action) if self.applies(action) => self.run(context, action),
+            _ => self.on_unbound(context, event, key),
+        }
+    }
+
+    /// What a key that no action claimed does: text, in every context that has
+    /// somewhere to put it.
+    fn on_unbound(&mut self, context: keys::Context, event: KeyEvent, key: Key) {
+        match context {
+            keys::Context::List => {
+                if let Some(c) = key.typed() {
+                    self.query.push(c);
+                    self.refilter();
+                }
             }
-            KeyCode::Char('h') if alt => {
+            keys::Context::Name => {
+                if self.name.handle(event) {
+                    self.refresh_target();
+                }
+            }
+            keys::Context::Jump => {
+                if let Some(jump) = &mut self.jump
+                    && jump.field.handle(event)
+                {
+                    self.rejump();
+                }
+            }
+            keys::Context::Path => {
+                if let Some(field) = &mut self.path {
+                    field.handle(event);
+                }
+            }
+            keys::Context::Global => {}
+        }
+    }
+
+    /// Whether an action would do anything here and now.
+    ///
+    /// The footer shows exactly the actions that answer yes, which is what
+    /// stops it from advertising a key that does nothing — and the dispatcher
+    /// asks the same question, so neither can be right while the other is
+    /// wrong.
+    pub fn applies(&self, action: Action) -> bool {
+        match action {
+            Action::Pane => self.saving(),
+            Action::Mark => self.multiple(),
+            Action::Filter => !self.request.filters.is_empty(),
+            _ => true,
+        }
+    }
+
+    /// Whether the footer is worth spending a slot on this action.
+    ///
+    /// Separate from [`App::applies`] on purpose: an action can be perfectly
+    /// live and still not worth naming. Suppressing it here rather than there
+    /// is what keeps the key working while the hint goes away.
+    pub fn advertises(&self, context: keys::Context, action: Action) -> bool {
+        if !self.applies(action) {
+            return false;
+        }
+        match action {
+            // Where `Enter` on the row already answers the request, a second
+            // key for the same outcome buys nothing and costs a slot.
+            Action::Commit if context == keys::Context::List => self.saving() || self.picking_dir(),
+            _ => true,
+        }
+    }
+
+    /// What the footer calls an action, given what the dialog is being asked.
+    pub fn label(&self, context: keys::Context, action: Action) -> String {
+        let accept = self.accept_label().to_lowercase();
+        match action {
+            Action::Commit if context == keys::Context::List && self.picking_dir() => {
+                format!("{accept} here")
+            }
+            Action::Commit => accept,
+            Action::Activate if self.saving() => format!("open/{accept}"),
+            Action::Activate if self.picking_dir() => "open".to_owned(),
+            Action::Activate => accept,
+            Action::Cancel | Action::Dismiss => "cancel".to_owned(),
+            // An overlay is left, not cancelled: the browser is still there.
+            Action::Close => "back".to_owned(),
+            Action::Filter => self.filter_label().unwrap_or_default(),
+            Action::Pane => "pane".to_owned(),
+            Action::Jump => "jump".to_owned(),
+            Action::Path => "path".to_owned(),
+            Action::Hidden => "hidden".to_owned(),
+            Action::Mark => "mark".to_owned(),
+            Action::Go => "go".to_owned(),
+            Action::Parent => "up".to_owned(),
+            Action::Up
+            | Action::Down
+            | Action::PageUp
+            | Action::PageDown
+            | Action::First
+            | Action::Last
+            | Action::Erase
+            | Action::Clear => String::new(),
+        }
+    }
+
+    fn run(&mut self, context: keys::Context, action: Action) {
+        match action {
+            Action::Commit => self.commit(),
+            Action::Cancel => self.cancel(),
+            Action::Jump => self.open_jump(),
+            Action::Filter => self.cycle_filter(),
+            Action::Path => self.path = Some(Field::new(abbreviate(&self.dir, &self.home))),
+            Action::Hidden => {
                 self.show_hidden = !self.show_hidden;
                 self.refilter();
-                return;
             }
-            KeyCode::Char('s') if ctrl => return self.commit(),
-            KeyCode::Enter if alt => return self.commit(),
-            KeyCode::Tab | KeyCode::BackTab if self.saving() => {
+            Action::Pane => {
                 self.focus = match self.focus {
                     Focus::List => Focus::Name,
                     Focus::Name => Focus::List,
-                };
-                return;
+                }
             }
-            _ => {}
-        }
-
-        match self.focus {
-            Focus::List => self.on_list_key(key),
-            Focus::Name => self.on_name_key(key),
-        }
-    }
-
-    fn on_list_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-        match key.code {
-            // Clearing the query first: a stray keystroke in the list should
+            Action::Activate => self.activate(),
+            Action::Parent => self.go_to_parent(),
+            Action::Up => self.move_in(context, -1),
+            Action::Down => self.move_in(context, 1),
+            Action::PageUp => self.move_in(context, -10),
+            Action::PageDown => self.move_in(context, 10),
+            Action::First => self.move_by(isize::MIN / 2),
+            Action::Last => self.move_by(isize::MAX / 2),
+            Action::Mark => self.toggle_mark(),
+            // Clearing the filter first: a stray keystroke in the list should
             // cost one more keypress, not the whole dialog.
-            KeyCode::Esc if !self.query.is_empty() => {
+            Action::Dismiss if !self.query.is_empty() => {
                 self.query.clear();
                 self.refilter();
             }
-            KeyCode::Esc => self.cancel(),
-            KeyCode::Char(' ') if self.multiple() => self.toggle_mark(),
-            KeyCode::Enter | KeyCode::Right => self.activate(),
-            KeyCode::Left => self.go_to_parent(),
-            KeyCode::Up => self.move_by(-1),
-            KeyCode::Down => self.move_by(1),
-            KeyCode::PageUp => self.move_by(-10),
-            KeyCode::PageDown => self.move_by(10),
-            KeyCode::Home => self.move_by(isize::MIN / 2),
-            KeyCode::End => self.move_by(isize::MAX / 2),
-            KeyCode::Backspace if self.query.is_empty() => self.go_to_parent(),
-            KeyCode::Backspace => {
+            Action::Dismiss => self.cancel(),
+            // Likewise the other way: backspacing past the start of a filter
+            // that is not there goes up, which is where it looks like it should.
+            Action::Erase if self.query.is_empty() => self.go_to_parent(),
+            Action::Erase => {
                 self.query.pop();
                 self.refilter();
             }
-            KeyCode::Char('u') if ctrl => {
+            Action::Clear => {
                 self.query.clear();
                 self.refilter();
             }
-            KeyCode::Char(c) if !ctrl && !alt => {
-                self.query.push(c);
-                self.refilter();
+            Action::Close => {
+                self.jump = None;
+                self.path = None;
             }
-            _ => {}
+            Action::Go => self.go(context),
         }
     }
 
-    fn on_name_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => return self.cancel(),
-            KeyCode::Enter => return self.commit(),
-            _ => {}
-        }
-        if self.name.handle(key) {
-            self.refresh_target();
+    fn move_in(&mut self, context: keys::Context, by: isize) {
+        match context {
+            keys::Context::Jump => self.jump_move(by),
+            _ => self.move_by(by),
         }
     }
 
-    fn on_jump_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-
-        match key.code {
-            KeyCode::Esc => return self.jump = None,
-            KeyCode::Char('p') if ctrl => return self.jump = None,
-            KeyCode::Up => return self.jump_move(-1),
-            KeyCode::Down => return self.jump_move(1),
-            KeyCode::PageUp => return self.jump_move(-10),
-            KeyCode::PageDown => return self.jump_move(10),
-            KeyCode::Enter => {
+    /// Accepting whichever overlay is open.
+    fn go(&mut self, context: keys::Context) {
+        match context {
+            keys::Context::Jump => {
                 let chosen = self.jump.as_ref().and_then(|jump| {
                     let at = jump.list.selected()?;
                     self.dirs.get(*jump.shown.get(at)?).cloned()
@@ -739,32 +832,14 @@ impl App {
                 if let Some(dir) = chosen {
                     self.go_to(dir, None);
                 }
-                return;
+            }
+            keys::Context::Path => {
+                let Some(field) = self.path.take() else {
+                    return;
+                };
+                self.go_to_typed(&field.text().to_owned());
             }
             _ => {}
-        }
-
-        if let Some(jump) = &mut self.jump
-            && jump.field.handle(key)
-        {
-            self.rejump();
-        }
-    }
-
-    fn on_path_key(&mut self, key: KeyEvent) {
-        let Some(field) = &mut self.path else { return };
-        match key.code {
-            KeyCode::Esc => {
-                self.path = None;
-            }
-            KeyCode::Enter => {
-                let typed = field.text().to_owned();
-                self.path = None;
-                self.go_to_typed(&typed);
-            }
-            _ => {
-                field.handle(key);
-            }
         }
     }
 

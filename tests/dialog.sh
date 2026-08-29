@@ -212,6 +212,18 @@ echo "the browser"
 
 run save ''
 check "the title is the application's" "┌─ Save board ─" "${out:0:15}"
+# The footer is built from the same table the keys are dispatched from, so a
+# key named here is a key that works, and one that works in this mode is named.
+check "the footer names the keys this pane actually has" \
+    "Tab pane Enter save ^P jump ^L path M-h hidden Esc cancel" \
+    "$(footer)"
+
+# The same request, one Tab away: `Enter` no longer commits, so the key that
+# does is named instead. Nothing about the footer is written down twice.
+run save '\t'
+check "and names a different set in the other pane" \
+    "Tab pane ^S save Enter open/save ^P jump ^L path M-h hidden Esc cancel" \
+    "$(footer)"
 check "the path bar abbreviates \$HOME" "~/Pictures" "$(row 2)"
 check "the cursor starts below .." "> ref/" "$(row 5)"
 check "sizes are shown for files only" "bern_copy.corkboard 31.5 kB" "$(row 7)"

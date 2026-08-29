@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, List, ListItem, Padding};
 use unicode_width::UnicodeWidthChar;
 
 use crate::dialog::{App, Bottom, Focus, Row, abbreviate};
+use crate::keys::Action;
 use crate::model::{self, Kind, SaveTarget};
 
 /// Slot 8 — furniture: borders, labels, sizes, key hints.
@@ -470,34 +471,35 @@ fn hint(app: &App) -> String {
     }
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let mut keys: Vec<(&str, String)> = Vec::new();
+/// What the footer offers, in the order it offers it. Which of these are shown
+/// is not decided here: the dialog is asked, and it is asked the same question
+/// the dispatcher asks, so the footer cannot advertise a key that does nothing.
+const OFFERED: &[Action] = &[
+    Action::Pane,
+    // The answer leads, where it is not simply `Enter` on the row.
+    Action::Commit,
+    Action::Activate,
+    Action::Go,
+    Action::Mark,
+    Action::Filter,
+    Action::Jump,
+    Action::Path,
+    Action::Hidden,
+    Action::Dismiss,
+    Action::Cancel,
+    Action::Close,
+];
 
-    if app.jump.is_some() {
-        keys.push(("Enter", "go".to_owned()));
-        keys.push(("Esc", "back".to_owned()));
-    } else {
-        let accept = app.accept_label().to_lowercase();
-        if app.saving() {
-            keys.push(("Tab", "pane".to_owned()));
-            keys.push(("Enter", format!("open/{accept}")));
-        } else if app.picking_dir() {
-            keys.push(("^S", format!("{accept} here")));
-            keys.push(("Enter", "open".to_owned()));
-        } else {
-            keys.push(("Enter", accept));
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let context = app.context();
+    let keys = OFFERED.iter().filter_map(|action| {
+        let key = app.keys.key(context, *action)?;
+        if !app.advertises(context, *action) {
+            return None;
         }
-        if app.multiple() {
-            keys.push(("Space", "mark".to_owned()));
-        }
-        if let Some(label) = app.filter_label() {
-            keys.push(("^F", label));
-        }
-        keys.push(("^P", "jump".to_owned()));
-        keys.push(("^L", "path".to_owned()));
-        keys.push(("M-h", "hidden".to_owned()));
-        keys.push(("Esc", "cancel".to_owned()));
-    }
+        let label = app.label(context, *action);
+        (!label.is_empty()).then(|| (key.to_string(), label))
+    });
 
     let mut spans = vec![Span::raw("   ")];
     for (key, what) in keys {
