@@ -5,8 +5,10 @@
 #
 # The terminal is stubbed out by FILEPICK_TERMINAL. Anything that takes a
 # command and blocks until it exits will do, which is the whole of what the
-# daemon asks of a terminal: `env` runs the real dialog, and a two-line script
-# stands in for a dialog that answered a particular way.
+# daemon asks of a terminal. Most of this stands a script in for the dialog so
+# the daemon is tested alone; the last section runs the real dialog under the
+# pty harness, so the two halves are checked against each other rather than
+# each against a stub of its own making.
 #
 # Run: tests/portal.sh
 set -euo pipefail
@@ -76,8 +78,34 @@ fake_dialog() {
     printf '%s' "$path"
 }
 
+# A stand-in dialog that answers the way the request implies, so the daemon can
+# be tested on its own. The real dialog needs a terminal; these tests
+# deliberately have none, and the last section below runs it under one.
+# argv reaching it is: <this> <binary> --dialog <request> <response>
+stub="$tmp/stub-dialog.py"
+cat > "$stub" <<'PYTHON'
+import json, os, sys
+
+request = json.load(open(sys.argv[3]))
+start, mode = request["start_dir"], request["mode"]
+
+if mode == "save_file":
+    paths = [os.path.join(start, request["current_name"] or "filepick-stub")]
+elif "save_files" in mode:
+    paths = [os.path.join(start, name) for name in mode["save_files"]["names"]]
+elif "open_directory" in mode:
+    paths = [start]
+else:
+    paths = [os.path.join(start, "filepick-stub")]
+
+json.dump(
+    {"outcome": "selected", "paths": paths, "filter": request["current_filter"]},
+    open(sys.argv[4], "w"),
+)
+PYTHON
+
 echo "portal round trip"
-start_daemon env
+start_daemon "python3 $stub"
 
 check "version is 4" \
     "u 4" \
@@ -119,7 +147,7 @@ echo "where the dialog opens"
 # exist yet — that is what a save is. The daemon being replaced stat'ed the
 # returned path and abandoned the whole success reply on ENOENT, so every save
 # silently did nothing, and it created the file up front to avoid that.
-start_daemon env FILEPICK_SAVE_DIR=suggested
+start_daemon "python3 $stub" FILEPICK_SAVE_DIR=suggested
 check "suggested: the application's folder is used" \
     "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/brand-new.corkboard\"" \
     "$(call SaveFile osssa{sv} /t/6 com.test "" Save 2 \
@@ -139,7 +167,7 @@ check "the directory it landed in is remembered" \
 # `last` is the default for saves and deliberately overrides the application:
 # most GTK apps propose ~/Documents for every save regardless of what is being
 # saved, so where the previous save landed is the better guess.
-start_daemon env
+start_daemon "python3 $stub"
 check "last: the application's folder is overridden" \
     "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/another.corkboard\"" \
     "$(call SaveFile osssa{sv} /t/7 com.test "" Save 2 \
@@ -186,6 +214,29 @@ check "Close kills the dialog" \
 check "Close cleans up after the dialog" \
     "" \
     "$(ls -A "$XDG_RUNTIME_DIR/filepick" 2>/dev/null)"
+
+# Everything above stubs the dialog out, which proves the daemon and says
+# nothing about whether the two halves read the same JSON. Here the terminal is
+# the pty harness and the dialog is the real one, driven by keystrokes.
+echo
+echo "the two halves together"
+
+start_daemon "python3 $root/tests/screen.py --" \
+    FILEPICK_SAVE_DIR=suggested \
+    FILEPICK_OPEN_DIR=suggested \
+    KEYS='\x15board.corkboard\x00\r'
+check "a name typed into the real dialog comes back as a URI" \
+    "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/board.corkboard\"" \
+    "$(call SaveFile osssa{sv} /t/13 com.test "" Save 2 \
+        current_name s untitled.corkboard \
+        current_folder ay $(bytes "$HOME/Pictures"))"
+
+start_daemon "python3 $root/tests/screen.py --" \
+    FILEPICK_OPEN_DIR=suggested \
+    KEYS='\x1b'
+check "and Esc in the real dialog is a cancel" \
+    "ua{sv} 1 0" \
+    "$(call OpenFile osssa{sv} /t/14 com.test "" Open 1 current_folder ay $(bytes "$HOME/Pictures"))"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

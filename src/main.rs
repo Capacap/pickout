@@ -6,10 +6,12 @@
 //! types rather than an undocumented argv convention.
 
 mod dialog;
+mod field;
 mod model;
 mod portal;
 mod protocol;
 mod terminal;
+mod ui;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

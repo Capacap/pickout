@@ -5,15 +5,10 @@
 //! terminal, so they live here and are tested directly. The only I/O is
 //! `read_dir` and `metadata`.
 
-// The dialog half is the only caller and it is not written yet.
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
-
-use crate::protocol::{Filter, FilterRule};
 
 // ---------------------------------------------------------------- listing
 
@@ -163,21 +158,6 @@ pub enum SaveTarget {
     Overwrite(PathBuf),
 }
 
-impl SaveTarget {
-    pub fn path(&self) -> Option<&Path> {
-        match self {
-            Self::Empty => None,
-            Self::IsDirectory(p) | Self::Overwrite(p) => Some(p),
-            Self::Blocked { path, .. } | Self::New { path, .. } => Some(path),
-        }
-    }
-
-    /// Whether committing this is something the dialog can answer with.
-    pub fn is_writable(&self) -> bool {
-        matches!(self, Self::New { .. } | Self::Overwrite(_))
-    }
-}
-
 pub fn save_target(base: &Path, home: &Path, name: &OsStr) -> SaveTarget {
     let Some(path) = resolve(base, home, name) else {
         return SaveTarget::Empty;
@@ -226,172 +206,381 @@ pub fn save_target(base: &Path, home: &Path, name: &OsStr) -> SaveTarget {
 
 // ---------------------------------------------------------------- filters
 
-/// Whether `name` — a bare filename, not a path — satisfies the filter.
+/// Deciding whether a file is one of the kinds the application asked for.
 ///
-/// A filter with no rules matches nothing; an application that sends one is
-/// saying "none of these", not "all of these".
-pub fn matches_filter(filter: &Filter, name: &OsStr) -> bool {
-    filter.rules.iter().any(|rule| matches_rule(rule, name))
-}
+/// A module of its own so the dead-code allow it needs — nothing calls any of
+/// this until the filter UI exists — stays off the rest of the file.
+#[allow(dead_code)]
+pub mod filters {
+    use crate::protocol::{Filter, FilterRule};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
 
-pub fn matches_rule(rule: &FilterRule, name: &OsStr) -> bool {
-    match rule {
-        FilterRule::Glob(pattern) => glob_match(pattern.as_bytes(), name.as_bytes()),
-        FilterRule::MimeType(mime) => matches_mime(mime, name),
+    /// Whether `name` — a bare filename, not a path — satisfies the filter.
+    ///
+    /// A filter with no rules matches nothing; an application that sends one is
+    /// saying "none of these", not "all of these".
+    pub fn matches(filter: &Filter, name: &OsStr) -> bool {
+        filter.rules.iter().any(|rule| matches_rule(rule, name))
     }
-}
 
-fn matches_mime(rule: &str, name: &OsStr) -> bool {
-    let Some((ty, sub)) = rule.split_once('/') else {
-        return false;
-    };
-    // Guessed from the extension: the file may not exist, so sniffing content
-    // is not on the table even when it would be more accurate.
-    mime_guess::from_path(Path::new(name)).iter().any(|guess| {
-        (ty == "*" || guess.type_().as_str().eq_ignore_ascii_case(ty))
-            && (sub == "*" || guess.subtype().as_str().eq_ignore_ascii_case(sub))
-    })
-}
+    pub fn matches_rule(rule: &FilterRule, name: &OsStr) -> bool {
+        match rule {
+            FilterRule::Glob(pattern) => glob_match(pattern.as_bytes(), name.as_bytes()),
+            FilterRule::MimeType(mime) => matches_mime(mime, name),
+        }
+    }
 
-/// Matches `*`, `?` and `[…]` against bytes.
-///
-/// Bytes rather than `str` because filenames are bytes, and glob patterns from
-/// applications are ASCII in practice. Writing this out avoids a glob crate's
-/// path semantics, which are wrong here: `*` must cross nothing, since what is
-/// being matched is a single filename.
-fn glob_match(pattern: &[u8], name: &[u8]) -> bool {
-    let (mut p, mut n) = (0usize, 0usize);
-    let mut star: Option<(usize, usize)> = None;
+    fn matches_mime(rule: &str, name: &OsStr) -> bool {
+        let Some((ty, sub)) = rule.split_once('/') else {
+            return false;
+        };
+        // Guessed from the extension: the file may not exist, so sniffing content
+        // is not on the table even when it would be more accurate.
+        mime_guess::from_path(Path::new(name)).iter().any(|guess| {
+            (ty == "*" || guess.type_().as_str().eq_ignore_ascii_case(ty))
+                && (sub == "*" || guess.subtype().as_str().eq_ignore_ascii_case(sub))
+        })
+    }
 
-    loop {
-        if p < pattern.len() {
-            match pattern[p] {
-                b'*' => {
-                    p += 1;
-                    star = Some((p, n));
-                    continue;
-                }
-                b'?' if n < name.len() => {
-                    p += 1;
-                    n += 1;
-                    continue;
-                }
-                b'[' if n < name.len() => match class_match(&pattern[p..], name[n]) {
-                    Some((len, true)) => {
-                        p += len;
-                        n += 1;
+    /// Matches `*`, `?` and `[…]` against bytes.
+    ///
+    /// Bytes rather than `str` because filenames are bytes, and glob patterns from
+    /// applications are ASCII in practice. Writing this out avoids a glob crate's
+    /// path semantics, which are wrong here: `*` must cross nothing, since what is
+    /// being matched is a single filename.
+    fn glob_match(pattern: &[u8], name: &[u8]) -> bool {
+        let (mut p, mut n) = (0usize, 0usize);
+        let mut star: Option<(usize, usize)> = None;
+
+        loop {
+            if p < pattern.len() {
+                match pattern[p] {
+                    b'*' => {
+                        p += 1;
+                        star = Some((p, n));
                         continue;
                     }
-                    Some((_, false)) => {}
-                    // Unterminated: a bracket with no closer is a literal one.
-                    None if name[n] == b'[' => {
+                    b'?' if n < name.len() => {
                         p += 1;
                         n += 1;
                         continue;
                     }
-                    None => {}
-                },
-                c if n < name.len() && c == name[n] => {
-                    p += 1;
-                    n += 1;
-                    continue;
+                    b'[' if n < name.len() => match class_match(&pattern[p..], name[n]) {
+                        Some((len, true)) => {
+                            p += len;
+                            n += 1;
+                            continue;
+                        }
+                        Some((_, false)) => {}
+                        // Unterminated: a bracket with no closer is a literal one.
+                        None if name[n] == b'[' => {
+                            p += 1;
+                            n += 1;
+                            continue;
+                        }
+                        None => {}
+                    },
+                    c if n < name.len() && c == name[n] => {
+                        p += 1;
+                        n += 1;
+                        continue;
+                    }
+                    _ => {}
                 }
-                _ => {}
+            } else if n == name.len() {
+                return true;
             }
-        } else if n == name.len() {
-            return true;
-        }
 
-        // Mismatch. Give the most recent `*` one more byte to swallow.
-        match star {
-            Some((resume, eaten)) if eaten < name.len() => {
-                p = resume;
-                n = eaten + 1;
-                star = Some((resume, n));
+            // Mismatch. Give the most recent `*` one more byte to swallow.
+            match star {
+                Some((resume, eaten)) if eaten < name.len() => {
+                    p = resume;
+                    n = eaten + 1;
+                    star = Some((resume, n));
+                }
+                _ => return false,
             }
-            _ => return false,
         }
     }
-}
 
-/// Returns the class's length in bytes and whether it matched, or `None` if it
-/// is never closed.
-fn class_match(pattern: &[u8], byte: u8) -> Option<(usize, bool)> {
-    let mut i = 1;
-    let negated = matches!(pattern.get(i), Some(b'!' | b'^'));
-    if negated {
-        i += 1;
+    /// Returns the class's length in bytes and whether it matched, or `None` if it
+    /// is never closed.
+    fn class_match(pattern: &[u8], byte: u8) -> Option<(usize, bool)> {
+        let mut i = 1;
+        let negated = matches!(pattern.get(i), Some(b'!' | b'^'));
+        if negated {
+            i += 1;
+        }
+
+        let mut hit = false;
+        let mut first = true;
+        loop {
+            match pattern.get(i) {
+                None => return None,
+                // A `]` in the first position is a literal, per POSIX.
+                Some(b']') if !first => {
+                    i += 1;
+                    break;
+                }
+                Some(&lo) => {
+                    first = false;
+                    // `-` immediately before the closing bracket is a literal.
+                    if pattern.get(i + 1) == Some(&b'-')
+                        && pattern.get(i + 2).is_some_and(|&c| c != b']')
+                    {
+                        hit |= (lo..=pattern[i + 2]).contains(&byte);
+                        i += 3;
+                    } else {
+                        hit |= lo == byte;
+                        i += 1;
+                    }
+                }
+            }
+        }
+
+        Some((i, hit != negated))
     }
 
-    let mut hit = false;
-    let mut first = true;
-    loop {
-        match pattern.get(i) {
-            None => return None,
-            // A `]` in the first position is a literal, per POSIX.
-            Some(b']') if !first => {
-                i += 1;
-                break;
-            }
-            Some(&lo) => {
-                first = false;
-                // `-` immediately before the closing bracket is a literal.
-                if pattern.get(i + 1) == Some(&b'-')
-                    && pattern.get(i + 2).is_some_and(|&c| c != b']')
-                {
-                    hit |= (lo..=pattern[i + 2]).contains(&byte);
-                    i += 3;
-                } else {
-                    hit |= lo == byte;
+    /// The extension a filter implies, for pre-filling the Name field.
+    ///
+    /// Only patterns of the form `*.something` say anything useful; `*` and
+    /// `*.[ch]?` do not, and guessing there would put a wrong extension on the
+    /// file. A character class contributes its first member, so the
+    /// `*.[jJ][pP][gG]` that GTK applications send yields `jpg`.
+    pub fn extension(filter: &Filter) -> Option<String> {
+        filter.rules.iter().find_map(|rule| match rule {
+            FilterRule::Glob(pattern) => glob_extension(pattern.as_bytes()),
+            FilterRule::MimeType(mime) => mime_guess::get_mime_extensions_str(mime)
+                .and_then(|exts| exts.first())
+                .map(|ext| (*ext).to_owned()),
+        })
+    }
+
+    fn glob_extension(pattern: &[u8]) -> Option<String> {
+        let rest = pattern.strip_prefix(b"*.")?;
+        let mut ext = String::new();
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i] {
+                b'*' | b'?' => return None,
+                b'[' => {
+                    // Only for the length and to reject an unterminated class; the
+                    // byte probed is irrelevant.
+                    let (len, _) = class_match(&rest[i..], 0)?;
+                    // A negated class stands for too many things to name one.
+                    if matches!(rest.get(i + 1), Some(b'!' | b'^')) {
+                        return None;
+                    }
+                    ext.push(*rest.get(i + 1)? as char);
+                    i += len;
+                }
+                c => {
+                    ext.push(c as char);
                     i += 1;
                 }
             }
         }
+        (!ext.is_empty()).then_some(ext)
     }
 
-    Some((i, hit != negated))
-}
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-/// The extension a filter implies, for pre-filling the Name field.
-///
-/// Only patterns of the form `*.something` say anything useful; `*` and
-/// `*.[ch]?` do not, and guessing there would put a wrong extension on the
-/// file. A character class contributes its first member, so the
-/// `*.[jJ][pP][gG]` that GTK applications send yields `jpg`.
-pub fn filter_extension(filter: &Filter) -> Option<String> {
-    filter.rules.iter().find_map(|rule| match rule {
-        FilterRule::Glob(pattern) => glob_extension(pattern.as_bytes()),
-        FilterRule::MimeType(mime) => mime_guess::get_mime_extensions_str(mime)
-            .and_then(|exts| exts.first())
-            .map(|ext| (*ext).to_owned()),
-    })
-}
+        fn os(s: &str) -> &OsStr {
+            OsStr::new(s)
+        }
 
-fn glob_extension(pattern: &[u8]) -> Option<String> {
-    let rest = pattern.strip_prefix(b"*.")?;
-    let mut ext = String::new();
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i] {
-            b'*' | b'?' => return None,
-            b'[' => {
-                // Only for the length and to reject an unterminated class; the
-                // byte probed is irrelevant.
-                let (len, _) = class_match(&rest[i..], 0)?;
-                // A negated class stands for too many things to name one.
-                if matches!(rest.get(i + 1), Some(b'!' | b'^')) {
-                    return None;
-                }
-                ext.push(*rest.get(i + 1)? as char);
-                i += len;
-            }
-            c => {
-                ext.push(c as char);
-                i += 1;
+        fn glob(pattern: &str) -> Filter {
+            Filter {
+                label: pattern.to_owned(),
+                rules: vec![FilterRule::Glob(pattern.to_owned())],
             }
         }
+
+        // -- globs
+
+        #[test]
+        fn a_plain_extension_glob_matches_only_that_extension() {
+            assert!(glob_match(b"*.png", b"photo.png"));
+            assert!(!glob_match(b"*.png", b"photo.jpg"));
+            assert!(!glob_match(b"*.png", b"png"));
+            assert!(glob_match(b"*.png", b".png"));
+        }
+
+        #[test]
+        fn globs_are_case_sensitive_which_is_why_applications_send_classes() {
+            assert!(!glob_match(b"*.jpg", b"photo.JPG"));
+            assert!(glob_match(b"*.[jJ][pP][gG]", b"photo.JPG"));
+            assert!(glob_match(b"*.[jJ][pP][gG]", b"photo.jpg"));
+            assert!(!glob_match(b"*.[jJ][pP][gG]", b"photo.png"));
+        }
+
+        #[test]
+        fn a_star_in_the_middle_backtracks() {
+            assert!(glob_match(b"a*b*.txt", b"axxbyy.txt"));
+            assert!(!glob_match(b"a*b*.txt", b"axxyy.txt"));
+            assert!(glob_match(b"*", b"anything at all"));
+            assert!(glob_match(b"*", b""));
+        }
+
+        #[test]
+        fn question_marks_take_exactly_one_byte() {
+            assert!(glob_match(b"?.txt", b"a.txt"));
+            assert!(!glob_match(b"?.txt", b"ab.txt"));
+            assert!(!glob_match(b"?.txt", b".txt"));
+        }
+
+        #[test]
+        fn classes_handle_ranges_and_negation() {
+            assert!(glob_match(b"[a-z].txt", b"q.txt"));
+            assert!(!glob_match(b"[a-z].txt", b"Q.txt"));
+            assert!(glob_match(b"[!a-z].txt", b"Q.txt"));
+            assert!(!glob_match(b"[!a-z].txt", b"q.txt"));
+        }
+
+        #[test]
+        fn an_unclosed_bracket_is_a_literal_bracket() {
+            assert!(glob_match(b"[abc", b"[abc"));
+            assert!(!glob_match(b"[abc", b"a"));
+        }
+
+        #[test]
+        fn a_filter_with_no_rules_matches_nothing() {
+            let empty = Filter {
+                label: "Nothing".into(),
+                rules: vec![],
+            };
+            assert!(!matches(&empty, os("a.txt")));
+        }
+
+        #[test]
+        fn any_one_rule_is_enough() {
+            let filter = Filter {
+                label: "Images".into(),
+                rules: vec![
+                    FilterRule::Glob("*.png".into()),
+                    FilterRule::Glob("*.jpg".into()),
+                ],
+            };
+            assert!(matches(&filter, os("a.jpg")));
+            assert!(matches(&filter, os("a.png")));
+            assert!(!matches(&filter, os("a.gif")));
+        }
+
+        // -- mime types
+
+        #[test]
+        fn mime_rules_are_guessed_from_the_extension() {
+            let rule = FilterRule::MimeType("image/png".into());
+            assert!(matches_rule(&rule, os("a.png")));
+            assert!(!matches_rule(&rule, os("a.jpg")));
+            assert!(!matches_rule(&rule, os("a")));
+        }
+
+        #[test]
+        fn a_mime_wildcard_matches_the_whole_type() {
+            let rule = FilterRule::MimeType("image/*".into());
+            assert!(matches_rule(&rule, os("a.png")));
+            assert!(matches_rule(&rule, os("a.jpg")));
+            assert!(!matches_rule(&rule, os("a.txt")));
+        }
+
+        #[test]
+        fn a_mime_rule_without_a_slash_matches_nothing() {
+            let rule = FilterRule::MimeType("image".into());
+            assert!(!matches_rule(&rule, os("a.png")));
+        }
+
+        // -- suggested extensions
+
+        #[test]
+        fn a_simple_glob_suggests_its_extension() {
+            assert_eq!(
+                extension(&glob("*.corkboard")).as_deref(),
+                Some("corkboard")
+            );
+        }
+
+        #[test]
+        fn a_case_class_suggests_its_first_spelling() {
+            assert_eq!(extension(&glob("*.[jJ][pP][gG]")).as_deref(), Some("jpg"));
+        }
+
+        #[test]
+        fn a_glob_that_names_no_extension_suggests_nothing() {
+            assert_eq!(extension(&glob("*")), None);
+            assert_eq!(extension(&glob("*.??")), None);
+            assert_eq!(extension(&glob("*.[!x]")), None);
+        }
+
+        #[test]
+        fn a_mime_filter_suggests_an_extension_too() {
+            let filter = Filter {
+                label: "PNG".into(),
+                rules: vec![FilterRule::MimeType("image/png".into())],
+            };
+            assert_eq!(extension(&filter).as_deref(), Some("png"));
+        }
     }
-    (!ext.is_empty()).then_some(ext)
+}
+
+// ---------------------------------------------------------------- matching
+
+/// Fuzzy matching, holding the matcher's scratch buffers between calls.
+pub struct Fuzzy {
+    matcher: nucleo_matcher::Matcher,
+    buf: Vec<char>,
+}
+
+impl Default for Fuzzy {
+    fn default() -> Self {
+        Self {
+            matcher: nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT),
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl Fuzzy {
+    /// Indices of the entries to show, in the order given.
+    ///
+    /// Filtering only, never reordering: a listing you already know keeps its
+    /// shape while you type, and the row under the cursor does not jump out
+    /// from under you. Ranking is worth its cost in the jump list, where the
+    /// candidates are thousands of paths nobody has looked at.
+    ///
+    /// A query beginning with `.` reveals dotfiles without the toggle — the
+    /// only way to type the name of one and see nothing would be worse.
+    pub fn visible(&mut self, entries: &[Entry], query: &str, show_hidden: bool) -> Vec<usize> {
+        let hidden_too = show_hidden || query.starts_with('.');
+        let pattern = (!query.is_empty()).then(|| {
+            nucleo_matcher::pattern::Pattern::parse(
+                query,
+                nucleo_matcher::pattern::CaseMatching::Smart,
+                nucleo_matcher::pattern::Normalization::Smart,
+            )
+        });
+
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| hidden_too || !entry.hidden)
+            .filter(|(_, entry)| match &pattern {
+                None => true,
+                Some(pattern) => self.score(pattern, &entry.name).is_some(),
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn score(&mut self, pattern: &nucleo_matcher::pattern::Pattern, name: &OsStr) -> Option<u32> {
+        let Self { matcher, buf } = self;
+        let text = name.to_string_lossy();
+        pattern.score(nucleo_matcher::Utf32Str::new(&text, buf), matcher)
+    }
 }
 
 #[cfg(test)]
@@ -400,13 +589,6 @@ mod tests {
 
     fn os(s: &str) -> &OsStr {
         OsStr::new(s)
-    }
-
-    fn glob(pattern: &str) -> Filter {
-        Filter {
-            label: pattern.to_owned(),
-            rules: vec![FilterRule::Glob(pattern.to_owned())],
-        }
     }
 
     // -- resolution
@@ -480,7 +662,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let got = save_target(dir.path(), dir.path(), os(""));
         assert_eq!(got, SaveTarget::Empty);
-        assert!(!got.is_writable());
     }
 
     #[test]
@@ -494,7 +675,6 @@ mod tests {
                 parents: vec![],
             }
         );
-        assert!(got.is_writable());
     }
 
     #[test]
@@ -527,7 +707,6 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let got = save_target(dir.path(), dir.path(), os("a.txt"));
         assert_eq!(got, SaveTarget::Overwrite(dir.path().join("a.txt")));
-        assert!(got.is_writable());
     }
 
     #[test]
@@ -536,7 +715,6 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let got = save_target(dir.path(), dir.path(), os("sub"));
         assert_eq!(got, SaveTarget::IsDirectory(dir.path().join("sub")));
-        assert!(!got.is_writable());
     }
 
     #[test]
@@ -547,7 +725,6 @@ mod tests {
             got,
             SaveTarget::IsDirectory(dir.path().join("nothing/here"))
         );
-        assert!(!got.is_writable());
     }
 
     #[test]
@@ -562,7 +739,6 @@ mod tests {
                 obstacle: dir.path().join("a.txt"),
             }
         );
-        assert!(!got.is_writable());
     }
 
     // -- listing
@@ -621,133 +797,5 @@ mod tests {
         assert_eq!(format_size(1000), "1.0 kB");
         assert_eq!(format_size(31_500), "31.5 kB");
         assert_eq!(format_size(1_200_000), "1.2 MB");
-    }
-
-    // -- globs
-
-    #[test]
-    fn a_plain_extension_glob_matches_only_that_extension() {
-        assert!(glob_match(b"*.png", b"photo.png"));
-        assert!(!glob_match(b"*.png", b"photo.jpg"));
-        assert!(!glob_match(b"*.png", b"png"));
-        assert!(glob_match(b"*.png", b".png"));
-    }
-
-    #[test]
-    fn globs_are_case_sensitive_which_is_why_applications_send_classes() {
-        assert!(!glob_match(b"*.jpg", b"photo.JPG"));
-        assert!(glob_match(b"*.[jJ][pP][gG]", b"photo.JPG"));
-        assert!(glob_match(b"*.[jJ][pP][gG]", b"photo.jpg"));
-        assert!(!glob_match(b"*.[jJ][pP][gG]", b"photo.png"));
-    }
-
-    #[test]
-    fn a_star_in_the_middle_backtracks() {
-        assert!(glob_match(b"a*b*.txt", b"axxbyy.txt"));
-        assert!(!glob_match(b"a*b*.txt", b"axxyy.txt"));
-        assert!(glob_match(b"*", b"anything at all"));
-        assert!(glob_match(b"*", b""));
-    }
-
-    #[test]
-    fn question_marks_take_exactly_one_byte() {
-        assert!(glob_match(b"?.txt", b"a.txt"));
-        assert!(!glob_match(b"?.txt", b"ab.txt"));
-        assert!(!glob_match(b"?.txt", b".txt"));
-    }
-
-    #[test]
-    fn classes_handle_ranges_and_negation() {
-        assert!(glob_match(b"[a-z].txt", b"q.txt"));
-        assert!(!glob_match(b"[a-z].txt", b"Q.txt"));
-        assert!(glob_match(b"[!a-z].txt", b"Q.txt"));
-        assert!(!glob_match(b"[!a-z].txt", b"q.txt"));
-    }
-
-    #[test]
-    fn an_unclosed_bracket_is_a_literal_bracket() {
-        assert!(glob_match(b"[abc", b"[abc"));
-        assert!(!glob_match(b"[abc", b"a"));
-    }
-
-    #[test]
-    fn a_filter_with_no_rules_matches_nothing() {
-        let empty = Filter {
-            label: "Nothing".into(),
-            rules: vec![],
-        };
-        assert!(!matches_filter(&empty, os("a.txt")));
-    }
-
-    #[test]
-    fn any_one_rule_is_enough() {
-        let filter = Filter {
-            label: "Images".into(),
-            rules: vec![
-                FilterRule::Glob("*.png".into()),
-                FilterRule::Glob("*.jpg".into()),
-            ],
-        };
-        assert!(matches_filter(&filter, os("a.jpg")));
-        assert!(matches_filter(&filter, os("a.png")));
-        assert!(!matches_filter(&filter, os("a.gif")));
-    }
-
-    // -- mime types
-
-    #[test]
-    fn mime_rules_are_guessed_from_the_extension() {
-        let rule = FilterRule::MimeType("image/png".into());
-        assert!(matches_rule(&rule, os("a.png")));
-        assert!(!matches_rule(&rule, os("a.jpg")));
-        assert!(!matches_rule(&rule, os("a")));
-    }
-
-    #[test]
-    fn a_mime_wildcard_matches_the_whole_type() {
-        let rule = FilterRule::MimeType("image/*".into());
-        assert!(matches_rule(&rule, os("a.png")));
-        assert!(matches_rule(&rule, os("a.jpg")));
-        assert!(!matches_rule(&rule, os("a.txt")));
-    }
-
-    #[test]
-    fn a_mime_rule_without_a_slash_matches_nothing() {
-        let rule = FilterRule::MimeType("image".into());
-        assert!(!matches_rule(&rule, os("a.png")));
-    }
-
-    // -- suggested extensions
-
-    #[test]
-    fn a_simple_glob_suggests_its_extension() {
-        assert_eq!(
-            filter_extension(&glob("*.corkboard")).as_deref(),
-            Some("corkboard")
-        );
-    }
-
-    #[test]
-    fn a_case_class_suggests_its_first_spelling() {
-        assert_eq!(
-            filter_extension(&glob("*.[jJ][pP][gG]")).as_deref(),
-            Some("jpg")
-        );
-    }
-
-    #[test]
-    fn a_glob_that_names_no_extension_suggests_nothing() {
-        assert_eq!(filter_extension(&glob("*")), None);
-        assert_eq!(filter_extension(&glob("*.??")), None);
-        assert_eq!(filter_extension(&glob("*.[!x]")), None);
-    }
-
-    #[test]
-    fn a_mime_filter_suggests_an_extension_too() {
-        let filter = Filter {
-            label: "PNG".into(),
-            rules: vec![FilterRule::MimeType("image/png".into())],
-        };
-        assert_eq!(filter_extension(&filter).as_deref(), Some("png"));
     }
 }

@@ -14,10 +14,10 @@ that cost time the first time round. This file is where it currently stands.
 
 ## State
 
-The portal half is done and proven end to end. The logic the chooser will sit
-on — listing, path resolution, filter matching — is written and tested. What is
-missing is the interface itself: `src/dialog.rs` is still a stub that answers
-without asking anyone.
+Both halves work. The interface is the single screen the design asks for —
+browser and Name field visible at once, both live — for `OpenFile`, `SaveFile`,
+`SaveFiles` and directory mode. Still to come: filters honoured in the list,
+`Ctrl-P` fuzzy directory jump, and multi-select.
 
 Working:
 
@@ -33,18 +33,48 @@ Working:
 - `src/model.rs`: directory listing, `~` expansion, names carrying `/`,
   relative fragments, what a typed name would overwrite or have to create,
   glob and MIME filter matching
+- the chooser: browse, type to filter fuzzily, `M-h` for dotfiles, `^L` to type
+  a path, a live Name field that says what committing would do — `exists`,
+  `creates 2 directories`, `is a directory` — and takes two `Enter`s to
+  overwrite
 
-Not built: the interface (`src/dialog.rs` is a placeholder).
+Not built: filters applied to the listing, `^P` jump, multi-select.
+
+## Keys
+
+| | In the list | In the Name field |
+| --- | --- | --- |
+| `Enter` | descend, or copy the file's name into Name (open mode: open it) | commit |
+| `Tab` | to the Name field | back to the list |
+| `Left` / `Right` | up a directory / descend | — |
+| typing | filters the listing | edits the name |
+| `Esc` | clears the filter, then cancels | cancels |
+
+`^S` commits from anywhere, `^L` makes the path bar editable, `M-h` toggles
+dotfiles, `^W` / `^U` / `^K` / `^A` / `^E` edit as readline does.
+
+`Enter` means two things, but never in one place: in the list it descends, in
+the Name field it commits. Meaning both in one place is what made the browser
+this replaces unusable for saving.
 
 ## Build and test
 
 ```sh
 cargo test         # pure logic: wire protocol, URIs, directory policy, the model
+tests/dialog.sh    # the chooser, driven through a pty
 tests/portal.sh    # the D-Bus backend, on a private bus, no window, no human
 ```
 
-`tests/portal.sh` stubs the terminal out with `FILEPICK_TERMINAL`. Anything that
-takes a command and blocks until it exits will do.
+`tests/portal.sh` stubs the terminal out with `FILEPICK_TERMINAL` — anything
+that takes a command and blocks until it exits will do — and its last section
+uses the pty harness as that terminal, so the two halves are checked against
+each other rather than each against a stub of its own making.
+
+`tests/screen.py` is the harness: it runs a command under a pty, feeds
+keystrokes in paced chunks and prints the screen that was drawn. Two rules it
+learned the hard way and that still bite — keys must arrive in chunks, because
+an application in raw mode eats a burst; and a real Return is CR (`\r`), never
+LF.
 
 ## Install
 
