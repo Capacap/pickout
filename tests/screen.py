@@ -12,6 +12,10 @@ replays the escape sequences into it, so what comes out is what a person would
 have been looking at when the program exited.
 
     KEYS='\\x1b[B\\x00\\r' tests/screen.py -- ./filepick --dialog req.json res.json
+
+Setting `STYLES` to a path additionally writes what each run of text was drawn
+in. Without it nothing in the suite can see a colour, and every span could be
+set to the same one with all the checks still passing.
 """
 
 import fcntl
@@ -36,6 +40,25 @@ COLS = int(os.environ.get("COLS", 120))
 # catch it.
 WIDE = frozenset("WF")
 
+# SGR attributes worth keeping apart, and the codes that turn them off again.
+# `REVERSE` is here despite the dialog not using it: a harness that silently
+# drops the obvious alternative to bold is the trap this dump exists to close.
+ATTRS = {1: "bold", 2: "dim", 3: "italic", 4: "underline", 7: "reverse"}
+OFF = {22: ("bold", "dim"), 23: ("italic",), 24: ("underline",), 27: ("reverse",)}
+DEFAULT = (None, None, frozenset())
+
+
+def pen_text(pen):
+    """A pen as one field of a dump line: `fg8`, `bold`, `fg8+bold`, `-`."""
+    fg, bg, attrs = pen
+    parts = []
+    if fg is not None:
+        parts.append(f"fg{fg}")
+    if bg is not None:
+        parts.append(f"bg{bg}")
+    parts.extend(sorted(attrs))
+    return "+".join(parts) or "-"
+
 
 def cell_width(c):
     if unicodedata.combining(c):
@@ -45,12 +68,15 @@ def cell_width(c):
 
 class Screen:
     """Enough of a terminal to render what ratatui emits: absolute cursor
-    moves, erases, and text. Styling is dropped — the tests are about layout
-    and content, and colours are checked by eye against foot.ini."""
+    moves, erases, text, and the pen each cell was written with. Colours are
+    kept as slot numbers rather than resolved, because that is the level the
+    dialog picks them at and the level a theme changes underneath it."""
 
     def __init__(self, rows, cols):
         self.rows, self.cols = rows, cols
         self.grid = [[" "] * cols for _ in range(rows)]
+        self.style = [[DEFAULT] * cols for _ in range(rows)]
+        self.pen = DEFAULT
         self.row = self.col = 0
         self.pending = ""
 
@@ -81,10 +107,12 @@ class Screen:
                 w = cell_width(c)
                 if self.col < self.cols and self.row < self.rows:
                     self.grid[self.row][self.col] = c
+                    self.style[self.row][self.col] = self.pen
                     # The trailing half of a wide cell holds nothing, so it
                     # takes up a column without contributing a character.
                     for x in range(self.col + 1, min(self.col + w, self.cols)):
                         self.grid[self.row][x] = ""
+                        self.style[self.row][x] = self.pen
                 self.col += w
 
     def _escape(self, data, i):
@@ -120,9 +148,13 @@ class Screen:
             self.col = min(at(1) - 1, self.cols - 1)
         elif final == "J" and at(0, 0) == 2:
             self.grid = [[" "] * self.cols for _ in range(self.rows)]
+            self.style = [[DEFAULT] * self.cols for _ in range(self.rows)]
         elif final == "K":
             for x in range(self.col, self.cols):
                 self.grid[self.row][x] = " "
+                self.style[self.row][x] = DEFAULT
+        elif final == "m":
+            self._sgr(nums or [0])
         elif final == "A":
             self.row = max(self.row - at(0), 0)
         elif final == "B":
@@ -131,6 +163,62 @@ class Screen:
             self.col = min(self.col + at(0), self.cols - 1)
         elif final == "D":
             self.col = max(self.col - at(0), 0)
+
+    def _sgr(self, nums):
+        fg, bg, attrs = self.pen
+        attrs = set(attrs)
+        i = 0
+        while i < len(nums):
+            n = nums[i]
+            if n == 0:
+                fg = bg = None
+                attrs.clear()
+            elif n in ATTRS:
+                attrs.add(ATTRS[n])
+            elif n in OFF:
+                attrs.difference_update(OFF[n])
+            elif n in (38, 48):
+                # `38;5;n` and `38;2;r;g;b`. crossterm writes even the base
+                # sixteen the first way, so a slot arrives as `38;5;8`.
+                kind = nums[i + 1] if i + 1 < len(nums) else None
+                if kind == 5:
+                    value, i = nums[i + 2] if i + 2 < len(nums) else 0, i + 2
+                elif kind == 2:
+                    value, i = tuple(nums[i + 2 : i + 5]), i + 4
+                else:
+                    value = None
+                if n == 38:
+                    fg = value
+                else:
+                    bg = value
+            elif 30 <= n <= 37 or 90 <= n <= 97:
+                fg = n - 30 if n <= 37 else n - 82
+            elif 40 <= n <= 47 or 100 <= n <= 107:
+                bg = n - 40 if n <= 47 else n - 92
+            elif n == 39:
+                fg = None
+            elif n == 49:
+                bg = None
+            i += 1
+        self.pen = (fg, bg, frozenset(attrs))
+
+    def styles(self):
+        """One line per run of same-pen text: row, column, pen, what it drew.
+
+        Runs of blanks are dropped. A pen is only worth reporting where it put
+        something on the screen, and the padding either side of a widget would
+        otherwise be most of the dump."""
+        lines = []
+        for r, (chars, pens) in enumerate(zip(self.grid, self.style), 1):
+            c = 0
+            while c < self.cols:
+                pen, start = pens[c], c
+                while c < self.cols and pens[c] == pen:
+                    c += 1
+                run = "".join(chars[start:c]).strip()
+                if run:
+                    lines.append(f"{r:3} {start + 1:3} {pen_text(pen):<14} {run}")
+        return "\n".join(lines)
 
     def text(self):
         lines = ["".join(row).rstrip() for row in self.grid]
@@ -185,6 +273,9 @@ def main():
 
     os.close(fd)
     _, status = os.waitpid(pid, 0)
+    if os.environ.get("STYLES"):
+        with open(os.environ["STYLES"], "w") as f:
+            f.write(screen.styles() + "\n")
     print(screen.text())
     sys.exit(os.waitstatus_to_exitcode(status) if status else 0)
 

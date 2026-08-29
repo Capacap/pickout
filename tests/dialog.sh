@@ -158,7 +158,7 @@ request dirs '{
 # run <request> <keys> — leaves the screen in $out and the answer in $answer.
 run() {
     rm -f "$tmp/response.json"
-    KEYS=$2 python3 "$screen" -- \
+    KEYS=$2 STYLES="$tmp/styles.txt" python3 "$screen" -- \
         "$binary" --dialog "$tmp/$1.json" "$tmp/response.json" > "$tmp/screen.txt" 2>&1
     out=$(cat "$tmp/screen.txt")
     answer=$(cat "$tmp/response.json" 2>/dev/null || true)
@@ -167,7 +167,7 @@ run() {
 # small <rows> <cols> <request> — the same, in a window of the given size.
 small() {
     rm -f "$tmp/response.json"
-    ROWS=$1 COLS=$2 KEYS='' python3 "$screen" -- \
+    ROWS=$1 COLS=$2 KEYS='' STYLES="$tmp/styles.txt" python3 "$screen" -- \
         "$binary" --dialog "$tmp/$3.json" "$tmp/response.json" > "$tmp/screen.txt" 2>&1
     out=$(cat "$tmp/screen.txt")
 }
@@ -179,6 +179,14 @@ row() {
 
 footer() {
     sed -n '40p' "$tmp/screen.txt" | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g'
+}
+
+pen() { # pen <text> — how the first run of text containing <text> was drawn
+    grep -m1 -F -- "$1" "$tmp/styles.txt" | awk '{print $3}'
+}
+
+pens() { # every distinct pen the screen was drawn in, in sorted order
+    awk '{print $3}' "$tmp/styles.txt" | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
 filter_of() { # the filter index the response came back with
