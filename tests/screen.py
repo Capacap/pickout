@@ -18,14 +18,17 @@ import fcntl
 import os
 import pty
 import re
-import unicodedata
 import select
 import struct
 import sys
 import termios
 import time
+import unicodedata
 
-ROWS, COLS = 40, 120
+# The default is a comfortable window; the tests that care about a cramped one
+# set these instead.
+ROWS = int(os.environ.get("ROWS", 40))
+COLS = int(os.environ.get("COLS", 120))
 
 # A wide character occupies two columns and leaves the second one unwritable,
 # which is the distinction the dialog's own width arithmetic turns on. A grid

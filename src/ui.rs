@@ -34,8 +34,39 @@ const POINTER: u16 = 2;
 const MARK: u16 = 2;
 /// Width of the label on the row under the listing.
 const LABEL: u16 = 8;
+/// Narrower than this and the padded label alone runs past the border, and a
+/// listing has no room to show a name and a size on one row.
+const MIN_WIDTH: u16 = 20;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // The jump list takes the whole box: it is a different question, and the
+    // Name field cannot be answered until it has been.
+    let bottom = if app.jump.is_some() {
+        None
+    } else {
+        app.bottom()
+    };
+
+    // Two borders, the path bar, its rule, one row of listing and the footer;
+    // a row under the listing costs its own rule as well. Under this the
+    // layout sheds rows in whatever order the constraints collapse, and the
+    // first to go is the Name field — which stays focused and committable
+    // while invisible. Saying so is the only honest thing left to draw.
+    let needed = if bottom.is_some() { 8 } else { 6 };
+    if frame.area().height < needed || frame.area().width < MIN_WIDTH {
+        // Short enough to fit in the window it is complaining about.
+        let note = if frame.area().height < needed {
+            format!("needs {needed} rows")
+        } else {
+            format!("needs {MIN_WIDTH} columns")
+        };
+        frame.render_widget(
+            Line::from(Span::styled(note, Style::new().fg(TEXT))),
+            frame.area(),
+        );
+        return;
+    }
+
     let [body, footer] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(frame.area());
 
@@ -48,13 +79,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let inner = block.inner(body);
     frame.render_widget(block, body);
 
-    // The jump list takes the whole box: it is a different question, and the
-    // Name field cannot be answered until it has been.
-    let bottom = if app.jump.is_some() {
-        None
-    } else {
-        app.bottom()
-    };
     let rows: &[Constraint] = if bottom.is_some() {
         &[
             Constraint::Length(1),
@@ -301,10 +325,16 @@ fn label_row(
         Rect { x: left, ..area },
     );
 
-    if !hint.is_empty() {
-        let x = area
-            .right()
-            .saturating_sub(PAD_RIGHT + columns(hint) as u16);
+    let value_x = left + LABEL;
+    // A hint placed by saturating subtraction lands on the label once the row
+    // is too narrow for both. The hint is commentary and the value is the
+    // answer, so a hint that would leave the value nothing to show is dropped
+    // instead and the room goes back to the value.
+    let hint_x = area
+        .right()
+        .checked_sub(PAD_RIGHT + columns(hint) as u16)
+        .filter(|x| !hint.is_empty() && *x > value_x + LABEL);
+    if let Some(x) = hint_x {
         frame.render_widget(
             Line::from(Span::styled(hint.to_owned(), hint_style)),
             Rect {
@@ -315,11 +345,11 @@ fn label_row(
         );
     }
 
-    let value_x = left + LABEL;
+    let reserved = hint_x.map_or(0, |_| columns(hint) as u16 + 2);
     let width = area
         .right()
         .saturating_sub(value_x + PAD_RIGHT)
-        .saturating_sub(columns(hint) as u16 + 2) as usize;
+        .saturating_sub(reserved) as usize;
     (value_x, width)
 }
 

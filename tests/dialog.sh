@@ -162,6 +162,14 @@ run() {
     answer=$(cat "$tmp/response.json" 2>/dev/null || true)
 }
 
+# small <rows> <cols> <request> — the same, in a window of the given size.
+small() {
+    rm -f "$tmp/response.json"
+    ROWS=$1 COLS=$2 KEYS='' python3 "$screen" -- \
+        "$binary" --dialog "$tmp/$3.json" "$tmp/response.json" > "$tmp/screen.txt" 2>&1
+    out=$(cat "$tmp/screen.txt")
+}
+
 # The content of one screen row, without the border or its padding.
 row() {
     sed -n "${1}p" "$tmp/screen.txt" | sed -e 's/^│ *//' -e 's/ *│$//' -e 's/  */ /g'
@@ -206,6 +214,17 @@ check "the path bar abbreviates \$HOME" "~/Pictures" "$(row 2)"
 check "the cursor starts below .." "> ref/" "$(row 5)"
 check "sizes are shown for files only" "bern_copy.corkboard 31.5 kB" "$(row 7)"
 check "dotfiles are hidden by default" "photo.png 1.2 MB" "$(row 8)"
+
+small 7 120 save
+check "a window too short for the Name field says so instead of hiding it" \
+    "needs 8 rows" "$(row 1)"
+
+small 5 120 open
+check "and a browser, which needs fewer rows, says its own number" \
+    "needs 6 rows" "$(row 1)"
+
+small 40 19 save
+check "too narrow is refused the same way" "needs 20 columns" "$(row 1)"
 
 run wide ''
 check "a name measured in columns keeps its size on the row" \
