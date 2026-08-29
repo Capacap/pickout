@@ -117,7 +117,8 @@ pub fn walk_dirs(root: &Path, budget: usize) -> Vec<PathBuf> {
     let mut queue = VecDeque::from([root.to_path_buf()]);
 
     while let Some(dir) = queue.pop_front() {
-        if found.len() >= budget {
+        let remaining = budget - found.len();
+        if remaining == 0 {
             break;
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -136,6 +137,10 @@ pub fn walk_dirs(root: &Path, budget: usize) -> Vec<PathBuf> {
         // Sorted, so that two equally good matches are settled alphabetically
         // rather than by whatever order the filesystem happened to hand back.
         children.sort();
+        // One directory can hold more than the whole budget, which is the
+        // shape the budget exists for. Cutting here rather than at the top of
+        // the loop is what makes it a cap on the result.
+        children.truncate(remaining);
         queue.extend(children.iter().cloned());
         found.extend(children);
     }
@@ -908,7 +913,8 @@ mod tests {
         for i in 0..10 {
             std::fs::create_dir(dir.path().join(format!("d{i}"))).unwrap();
         }
-        assert_eq!(walk_dirs(dir.path(), 4).len(), 10);
+        assert_eq!(walk_dirs(dir.path(), 4).len(), 4);
+        assert_eq!(walk_dirs(dir.path(), 20).len(), 10);
         assert!(walk_dirs(dir.path(), 0).is_empty());
     }
 
