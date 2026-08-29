@@ -42,7 +42,8 @@ Working:
 - `^P`: every directory under `$HOME`, ranked as you type, walked in the
   background so the dialog opens at once
 - `Space` to mark, in the modes that take more than one answer; marks survive
-  changing directory
+  changing directory, and once anything is marked the marks are the whole
+  answer — the cursor is where navigating left it, not something chosen
 - `SaveFiles`: the names the application is about to write, and how many of them
   already exist in the directory the cursor is on
 

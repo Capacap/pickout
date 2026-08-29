@@ -336,8 +336,12 @@ check "^S answers with the marks" \
     "~/Pictures/bern_copy.corkboard ~/Pictures/photo.png" "$(paths)"
 
 run multi '\x1b[B\x1b[B\x00 \x00\r'
-check "Enter answers with the marks and the row it is aimed at" \
-    "~/Pictures/bern_copy.corkboard ~/Pictures/photo.png" "$(paths)"
+check "Enter answers with the marks, not the row it is resting on" \
+    "~/Pictures/bern_copy.corkboard" "$(paths)"
+
+run multi '\x1b[B\x1b[B\x00\r'
+check "and with the row alone when nothing is marked" \
+    "~/Pictures/bern_copy.corkboard" "$(paths)"
 
 run multi ' '
 check "a directory cannot be marked when files are wanted" "" "$(row 38)"

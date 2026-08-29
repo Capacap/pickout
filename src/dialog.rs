@@ -516,26 +516,29 @@ impl App {
                 self.refresh_target();
             }
             Some(Row::Entry(i)) if !self.picking_dir() => {
-                // `Enter` is a positive act on this row, so it answers with the
-                // marks and this file both: marking three and pressing Enter on
-                // a fourth means all four.
-                let path = self.entry_path(i);
-                let mut paths: Vec<PathBuf> = self.marks.iter().cloned().collect();
-                if !paths.contains(&path) {
-                    paths.push(path);
-                }
-                paths.sort();
+                let paths = self.answer_or(self.entry_path(i));
                 self.answer(paths);
             }
             Some(Row::Entry(_)) => {}
         }
     }
 
+    /// The marks, or `fallback` if nothing is marked.
+    ///
+    /// Marks outrank the cursor even when a key is aimed at a row, because the
+    /// cursor is where navigating left it rather than anything chosen. Adding
+    /// the row under it costs one more `Space` — the same key that put the rest
+    /// of them there.
+    fn answer_or(&self, fallback: PathBuf) -> Vec<PathBuf> {
+        if self.marks.is_empty() {
+            vec![fallback]
+        } else {
+            self.marks.iter().cloned().collect()
+        }
+    }
+
     /// `Ctrl-S`, and `Enter` in the Name field.
     fn commit(&mut self) {
-        // Marks are the answer whenever there are any. Unlike `Enter` on a row,
-        // this is not aimed at anything, so it takes what was chosen
-        // deliberately and not whatever the cursor is resting on.
         if self.multiple() && !self.marks.is_empty() {
             let paths = self.marks.iter().cloned().collect();
             return self.answer(paths);
