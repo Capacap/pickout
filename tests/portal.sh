@@ -29,6 +29,8 @@ daemon=
 trap 'kill "$daemon" 2>/dev/null || true; rm -rf -- "$tmp"' EXIT
 
 export XDG_RUNTIME_DIR="$tmp/run" XDG_STATE_HOME="$tmp/state" HOME="$tmp/home"
+# The developer's own settings are not part of the test.
+export FILEPICK_CONFIG="$tmp/config.toml"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$HOME/Pictures"
 
 # ashpd asks for the bus name without allowing replacement, so swapping the
@@ -41,6 +43,27 @@ start_daemon() {
         wait "$daemon" 2>/dev/null || true
     fi
     env FILEPICK_TERMINAL="$terminal" "$@" \
+        "$root/target/debug/filepick" --serve >>"$tmp/daemon.log" 2>&1 &
+    daemon=$!
+    for _ in $(seq 50); do
+        busctl --user status "$bus" >/dev/null 2>&1 && return
+        sleep 0.1
+    done
+    echo "daemon never took the bus name; log follows" >&2
+    cat "$tmp/daemon.log" >&2
+    exit 1
+}
+
+# start_configured <toml> — the same, with the settings coming from the config
+# file and nothing in the environment. The daemon is D-Bus activated in real
+# use, so the file is the only route that is always open to it.
+start_configured() {
+    printf '%s\n' "$1" > "$FILEPICK_CONFIG"
+    if [[ -n $daemon ]]; then
+        kill "$daemon" 2>/dev/null || true
+        wait "$daemon" 2>/dev/null || true
+    fi
+    env -u FILEPICK_TERMINAL -u FILEPICK_SAVE_DIR -u FILEPICK_OPEN_DIR \
         "$root/target/debug/filepick" --serve >>"$tmp/daemon.log" 2>&1 &
     daemon=$!
     for _ in $(seq 50); do
@@ -173,6 +196,34 @@ check "last: the application's folder is overridden" \
     "$(call SaveFile osssa{sv} /t/7 com.test "" Save 2 \
         current_name s another.corkboard \
         current_folder ay $(bytes "$HOME"))"
+
+echo
+echo "settings from the config file"
+
+# The daemon is started by D-Bus, which does not inherit a shell's exports, so
+# a setting that only works through the environment does not work at all.
+start_configured "terminal = \"python3 $stub\"
+save_dir = \"suggested\""
+check "the terminal comes from the file when the environment is empty" \
+    "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/from-config.corkboard\"" \
+    "$(call SaveFile osssa{sv} /t/20 com.test "" Save 2 \
+        current_name s from-config.corkboard \
+        current_folder ay $(bytes "$HOME/Pictures"))"
+
+# A file it cannot parse must not take the dialog down with it: a daemon that
+# fails to answer is a cancel the application cannot tell from a real one.
+printf 'save_dir = "suggested"\nnonsense =\n' > "$FILEPICK_CONFIG"
+start_daemon "python3 $stub" FILEPICK_SAVE_DIR=suggested
+check "a file it cannot parse still answers" \
+    "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/broken-config.corkboard\"" \
+    "$(call SaveFile osssa{sv} /t/21 com.test "" Save 2 \
+        current_name s broken-config.corkboard \
+        current_folder ay $(bytes "$HOME"))"
+
+check "and says which file and why" "said" \
+    "$(grep -q 'ignoring .*config.toml' "$tmp/daemon.log" && echo said || echo silent)"
+
+: > "$FILEPICK_CONFIG"
 
 echo
 echo "how a dialog can end"

@@ -11,7 +11,7 @@
 //!   time. `kitty` is safe by default; `kitty --single-instance` and
 //!   `footclient` are not.
 //!
-//! Nothing here is specific to kitty beyond the default; `FILEPICK_TERMINAL`
+//! Nothing here is specific to kitty beyond the default; the `terminal` setting
 //! replaces the whole invocation.
 
 use std::ffi::{OsStr, OsString};
@@ -19,6 +19,8 @@ use std::process::ExitStatus;
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
+
+use crate::config::Config;
 
 /// Matches the `window-rule` in niri's config.
 pub const APP_ID: &str = "filepick";
@@ -42,18 +44,18 @@ impl Default for Terminal {
 }
 
 impl Terminal {
-    /// `FILEPICK_TERMINAL` overrides the invocation, split on whitespace.
+    /// The configured invocation, split on whitespace, or kitty.
     ///
     /// No quoting: a terminal invocation with a space inside a single argument
     /// is not a thing that happens, and the escaping dance the shell wrapper
     /// needed here is exactly what made filenames hazardous. Our own arguments
     /// are passed as argv and never go near a shell.
-    pub fn from_env() -> Self {
-        match std::env::var("FILEPICK_TERMINAL") {
-            Ok(spec) if !spec.trim().is_empty() => Self {
+    pub fn resolve(config: &Config) -> Self {
+        match config.terminal.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(spec) => Self {
                 argv: spec.split_whitespace().map(OsString::from).collect(),
             },
-            _ => Self::default(),
+            None => Self::default(),
         }
     }
 

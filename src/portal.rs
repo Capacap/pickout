@@ -21,6 +21,7 @@ use ashpd::desktop::file_chooser::{
 use ashpd::{MaybeAppID, PortalError, Uri, WindowIdentifierType};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_encode};
 
+use crate::config::{Config, home};
 use crate::protocol::{self, Mode, Request, Response, WirePath};
 use crate::terminal::Terminal;
 
@@ -50,11 +51,13 @@ pub enum DirPolicy {
 }
 
 impl DirPolicy {
-    fn from_env(var: &str, fallback: Self) -> Self {
-        match std::env::var(var).as_deref() {
-            Ok("suggested") => Self::Suggested,
-            Ok("last") => Self::Last,
-            Ok(path) if path.starts_with('/') => Self::Fixed(PathBuf::from(path)),
+    /// Anything that is not one of the three shapes leaves `fallback` standing,
+    /// on the grounds that a misspelt policy should not change where saves go.
+    fn from_settings(configured: Option<&str>, fallback: Self) -> Self {
+        match configured {
+            Some("suggested") => Self::Suggested,
+            Some("last") => Self::Last,
+            Some(path) if path.starts_with('/') => Self::Fixed(PathBuf::from(path)),
             _ => fallback,
         }
     }
@@ -83,11 +86,11 @@ pub struct FileChooser {
 }
 
 impl FileChooser {
-    pub fn from_env() -> Self {
+    pub fn new(config: &Config) -> Self {
         Self {
-            terminal: Terminal::from_env(),
-            open_dir: DirPolicy::from_env("FILEPICK_OPEN_DIR", DirPolicy::Suggested),
-            save_dir: DirPolicy::from_env("FILEPICK_SAVE_DIR", DirPolicy::Last),
+            terminal: Terminal::resolve(config),
+            open_dir: DirPolicy::from_settings(config.open_dir.as_deref(), DirPolicy::Suggested),
+            save_dir: DirPolicy::from_settings(config.save_dir.as_deref(), DirPolicy::Last),
         }
     }
 
@@ -354,12 +357,6 @@ fn state_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local/state"))
         .join("filepick")
-}
-
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn default_dir() -> PathBuf {

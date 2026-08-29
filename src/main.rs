@@ -5,6 +5,7 @@
 //! same program is what lets the contract between them be a pair of shared
 //! types rather than an undocumented argv convention.
 
+mod config;
 mod dialog;
 mod field;
 mod model;
@@ -68,8 +69,13 @@ fn serve() -> Result<()> {
         .context("starting the async runtime")?
         .block_on(async {
             tracing::info!("serving org.freedesktop.impl.portal.FileChooser");
+            let config = config::Config::load();
+            if let Some(problem) = &config.problem {
+                tracing::warn!("{problem}");
+            }
+
             ashpd::backend::Builder::new("org.freedesktop.impl.portal.desktop.filepick")?
-                .file_chooser(portal::FileChooser::from_env())
+                .file_chooser(portal::FileChooser::new(&config))
                 .build()
                 .await?;
 

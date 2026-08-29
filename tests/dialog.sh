@@ -23,6 +23,8 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 export HOME=$tmp
+# The developer's own settings are not part of the test.
+export FILEPICK_CONFIG="$tmp/config.toml"
 
 # A tree with one of everything the interface has to say something about.
 mkdir -p "$tmp/Pictures/Screenshots" "$tmp/Pictures/ref"
