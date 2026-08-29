@@ -1,10 +1,13 @@
 //! Drawing.
 //!
-//! Colours are named as ANSI slot numbers, never as hex, so the dialog follows
-//! `~/.config/foot/foot.ini` the way helix and yazi do. Chrome signals with
-//! brightness and nothing else: the selected row is a bright pointer and bright
-//! text, because slot 0 against the terminal background is too small a step to
-//! read at a glance, and no state here is worth spending a hue on.
+//! Colours are named as ANSI slots and as the terminal's own foreground, never
+//! as hex, so the dialog follows `~/.config/foot/foot.ini` the way helix and
+//! yazi do — and follows it into a light theme as well as a dark one. That is
+//! why the accent is weight rather than a brighter slot, and why the selected
+//! row carries no background of its own: no slot means "brighter than the
+//! foreground" under both themes, and a slot-0 bar is either invisible or a
+//! slab depending on which one you are in. Chrome signals with prominence and
+//! nothing else, and no state here is worth spending a hue on.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -18,12 +21,15 @@ use crate::dialog::{App, Bottom, Focus, Row, abbreviate};
 use crate::keys::Action;
 use crate::model::{self, Kind, SaveTarget};
 
-/// Slot 8 — furniture: borders, labels, sizes, key hints.
-const DIM: Color = Color::DarkGray;
-/// Slot 7 — body text.
-const TEXT: Color = Color::Gray;
-/// Slot 15 — what the eye should land on.
-const BRIGHT: Color = Color::White;
+/// Furniture: borders, labels, sizes, key hints. Slot 8 is the one slot whose
+/// meaning survives a theme flip — lighter than the foreground on a dark
+/// terminal, darker than it on a light one, muted against either.
+const DIM: Style = Style::new().fg(Color::DarkGray);
+/// Body text, in whatever the terminal calls its foreground.
+const TEXT: Style = Style::new().fg(Color::Reset);
+/// What the eye should land on. Weight rather than a brighter slot, which a
+/// terminal renders as extra brightness anyway where it has one to spare.
+const BRIGHT: Style = TEXT.add_modifier(Modifier::BOLD);
 
 /// Left inset inside the border, and the right inset that keeps the size column
 /// clear of it.
@@ -61,22 +67,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             format!("needs {MIN_WIDTH} columns")
         };
-        frame.render_widget(
-            Line::from(Span::styled(note, Style::new().fg(TEXT))),
-            frame.area(),
-        );
+        frame.render_widget(Line::from(Span::styled(note, TEXT)), frame.area());
         return;
     }
 
     let [body, footer] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(frame.area());
 
-    let block = Block::bordered()
-        .border_style(Style::new().fg(DIM))
-        .title(Line::from(vec![
-            Span::styled("─", Style::new().fg(DIM)),
-            Span::styled(format!(" {} ", app.title()), Style::new().fg(TEXT)),
-        ]));
+    let block = Block::bordered().border_style(DIM).title(Line::from(vec![
+        Span::styled("─", DIM),
+        Span::styled(format!(" {} ", app.title()), TEXT),
+    ]));
     let inner = block.inner(body);
     frame.render_widget(block, body);
 
@@ -114,7 +115,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// A `├────┤` across the whole box, drawn into the border columns the layout
 /// does not own.
 fn rule(buf: &mut Buffer, outer: Rect, y: u16) {
-    let style = Style::new().fg(DIM);
     for x in outer.x..outer.right() {
         let symbol = if x == outer.x {
             "├"
@@ -124,7 +124,7 @@ fn rule(buf: &mut Buffer, outer: Rect, y: u16) {
             "─"
         };
         if let Some(cell) = buf.cell_mut((x, y)) {
-            cell.set_symbol(symbol).set_style(style);
+            cell.set_symbol(symbol).set_style(DIM);
         }
     }
 }
@@ -152,7 +152,7 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
         let note_width = note.as_ref().map_or(0, |note| columns(note) + 2);
         let (visible, cursor) = field.view(width.saturating_sub(note_width));
         frame.render_widget(
-            Line::from(Span::styled(visible.to_owned(), Style::new().fg(BRIGHT))),
+            Line::from(Span::styled(visible.to_owned(), BRIGHT)),
             Rect { x: left, ..area },
         );
         if let Some(note) = note {
@@ -160,7 +160,7 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
                 .right()
                 .saturating_sub(PAD_RIGHT + columns(&note) as u16);
             frame.render_widget(
-                Line::from(Span::styled(note, Style::new().fg(DIM))),
+                Line::from(Span::styled(note, DIM)),
                 Rect {
                     x,
                     width: area.right().saturating_sub(x),
@@ -175,11 +175,8 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
     // The right-hand end carries whatever is currently true of the listing: an
     // error if the directory would not open, otherwise the filter being typed.
     let note = match (&app.message, app.query.is_empty()) {
-        (Some(message), _) => Some(Span::styled(message.clone(), Style::new().fg(TEXT))),
-        (None, false) => Some(Span::styled(
-            format!("/{}", app.query),
-            Style::new().fg(BRIGHT),
-        )),
+        (Some(message), _) => Some(Span::styled(message.clone(), TEXT)),
+        (None, false) => Some(Span::styled(format!("/{}", app.query), BRIGHT)),
         (None, true) => None,
     };
 
@@ -187,7 +184,7 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
     let note_width = note.as_ref().map_or(0, |s| columns(&s.content) + 2);
     let mut spans = vec![Span::styled(
         truncate(&path, width.saturating_sub(note_width)),
-        Style::new().fg(TEXT),
+        TEXT,
     )];
     if let Some(note) = note {
         let used = columns(&spans[0].content) + columns(&note.content);
@@ -244,36 +241,24 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
             let gap = width.saturating_sub(columns(&label) + columns(&size));
             let mut spans = Vec::new();
             if marking {
-                spans.push(Span::styled(
-                    format!("{mark} "),
-                    Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
-                ));
+                spans.push(Span::styled(format!("{mark} "), BRIGHT));
             }
-            spans.push(Span::styled(
-                label,
-                Style::new().fg(if dim { DIM } else { TEXT }),
-            ));
+            spans.push(Span::styled(label, if dim { DIM } else { TEXT }));
             spans.push(Span::raw(" ".repeat(gap)));
-            spans.push(Span::styled(size, Style::new().fg(DIM)));
+            spans.push(Span::styled(size, DIM));
             ListItem::new(Line::from(spans))
         })
         .collect();
 
-    // The selected row goes bright only while the list is the pane being
+    // The selected row takes the accent only while the list is the pane being
     // typed into. Two things claiming the eye at once is what a Name field
-    // alongside a browser risks, and brightness is the only signal in play.
+    // alongside a browser risks, and prominence is the only signal in play. The
+    // pointer stays either way: it is what says which row Enter would answer.
     let focused = app.focus == Focus::List && app.path.is_none();
     let list = List::new(items)
         .block(Block::new().padding(Padding::new(PAD_LEFT, PAD_RIGHT, 0, 0)))
         .highlight_symbol("> ")
-        .highlight_style(if focused {
-            Style::new()
-                .fg(BRIGHT)
-                .bg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(TEXT).bg(Color::Black)
-        });
+        .highlight_style(if focused { BRIGHT } else { TEXT });
     frame.render_stateful_widget(list, area, &mut app.list);
 }
 
@@ -290,7 +275,7 @@ fn draw_jump(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|i| {
             ListItem::new(Line::from(Span::styled(
                 truncate(&abbreviate(&dirs[*i], home), width),
-                Style::new().fg(TEXT),
+                TEXT,
             )))
         })
         .collect();
@@ -298,12 +283,7 @@ fn draw_jump(frame: &mut Frame, app: &mut App, area: Rect) {
     let list = List::new(items)
         .block(Block::new().padding(Padding::new(PAD_LEFT, PAD_RIGHT, 0, 0)))
         .highlight_symbol("> ")
-        .highlight_style(
-            Style::new()
-                .fg(BRIGHT)
-                .bg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(BRIGHT);
     frame.render_stateful_widget(list, area, &mut jump.list);
 }
 
@@ -368,14 +348,14 @@ fn draw_writing(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         "Writing",
-        Style::new().fg(if bright { BRIGHT } else { DIM }),
+        if bright { BRIGHT } else { DIM },
         &hint,
-        Style::new().fg(TEXT),
+        TEXT,
     );
     frame.render_widget(
         Line::from(Span::styled(
             truncate(&names.join(", "), width),
-            Style::new().fg(if bright { BRIGHT } else { TEXT }),
+            if bright { BRIGHT } else { TEXT },
         )),
         Rect {
             x,
@@ -388,19 +368,9 @@ fn draw_writing(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_marked(frame: &mut Frame, app: &App, area: Rect) {
     let names = app.marked();
     let hint = format!("{} selected", names.len());
-    let (x, width) = label_row(
-        frame,
-        area,
-        "Marked",
-        Style::new().fg(DIM),
-        &hint,
-        Style::new().fg(DIM),
-    );
+    let (x, width) = label_row(frame, area, "Marked", DIM, &hint, DIM);
     frame.render_widget(
-        Line::from(Span::styled(
-            truncate(&names.join(", "), width),
-            Style::new().fg(TEXT),
-        )),
+        Line::from(Span::styled(truncate(&names.join(", "), width), TEXT)),
         Rect {
             x,
             width: area.right().saturating_sub(x),
@@ -410,7 +380,7 @@ fn draw_marked(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_name(frame: &mut Frame, app: &App, area: Rect) {
-    // Arming an overwrite changes the label as well as brightening the row.
+    // Arming an overwrite changes the label as well as the weight of the row.
     // A warning that only appends words to the end of a line is a mode you can
     // be in without noticing.
     let (label, accent) = if app.armed {
@@ -423,21 +393,14 @@ fn draw_name(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         area,
         label,
-        Style::new().fg(if app.armed { BRIGHT } else { DIM }),
+        if app.armed { BRIGHT } else { DIM },
         &hint,
-        Style::new().fg(if app.armed { TEXT } else { DIM }),
+        if app.armed { TEXT } else { DIM },
     );
 
     let (visible, cursor) = app.name.view(width);
     frame.render_widget(
-        Line::from(Span::styled(
-            visible.to_owned(),
-            Style::new().fg(accent).add_modifier(if app.armed {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            }),
-        )),
+        Line::from(Span::styled(visible.to_owned(), accent)),
         Rect {
             x: value_x,
             width: area.right().saturating_sub(value_x),
@@ -503,8 +466,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = vec![Span::raw("   ")];
     for (key, what) in keys {
-        spans.push(Span::styled(key, Style::new().fg(TEXT)));
-        spans.push(Span::styled(format!(" {what}   "), Style::new().fg(DIM)));
+        spans.push(Span::styled(key, TEXT));
+        spans.push(Span::styled(format!(" {what}   "), DIM));
     }
     frame.render_widget(Line::from(spans), area);
 }

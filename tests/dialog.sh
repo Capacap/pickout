@@ -491,6 +491,29 @@ check "and the screen says which line it was" \
 
 : > "$FILEPICK_CONFIG"
 
+echo "colours"
+
+# Nothing may name a slot whose meaning flips with the theme. Slot 7, slot 15
+# and a slot-0 selection bar each read as intended on a dark terminal and as
+# invisible text or a black slab on a light one; the terminal's own foreground,
+# slot 8 and bold do not.
+run open ''
+check "the browser draws in nothing a theme can invert" "- bold fg8" "$(pens)"
+check "the selected row is told apart by weight" "bold" "$(pen '> ref/')"
+
+run save '\t\x00\x1bh'
+check "and a hidden one by slot 8, muted under either theme" "fg8" \
+    "$(pen .hidden_note)"
+
+run save ''
+check "an unarmed name is furniture" "fg8" "$(pen Name)"
+check "and the list it is not focused on keeps the plain foreground" "-" \
+    "$(pen '> ref/')"
+
+run save '\x15photo.png\x00\r'
+check "arming an overwrite is a change of weight, not of colour" "bold" \
+    "$(pen Replace)"
+
 echo
 printf '%d passed, %d failed\n\n' "$passed" "$failed"
 [[ $failed -eq 0 ]]
