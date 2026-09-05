@@ -64,8 +64,8 @@ app ──D-Bus──> pickout --serve            portal backend, D-Bus activate
                                 pickout --dialog <request.json> <response.json>
 ```
 
-pickout is four files, and `cargo install pickout` places only the first
-of them. `./install.sh` puts all four where a user session looks:
+pickout is four files, and the binary is only the first of them.
+`./install.sh` builds it and puts all four where a user session looks:
 
 ```sh
 git clone https://github.com/Capacap/pickout
