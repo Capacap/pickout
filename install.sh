@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# What this machine uses, not the only way in. The four files it writes are
-# described in the README; anyone packaging pickout or wiring it into a
-# different session is expected to place them their own way.
+# One way in, not the only one. The four files it writes are described in the
+# README; anyone packaging pickout or wiring it into a different session is
+# expected to place them their own way.
 #
 # Installs pickout into the user's XDG directories and registers it as a
 # portal backend. Nothing is installed system-wide and nothing is overwritten
 # outside the paths listed at the end.
 #
-# This does NOT route the FileChooser interface to pickout — that is a
-# deliberate one-line edit in niri-portals.conf, so that installing and
-# switching over stay separate decisions. See the note printed at the end.
+# This does NOT route the FileChooser interface to pickout. That is a
+# deliberate one-line edit in portals.conf, so that installing and switching
+# over stay separate decisions. See the note printed at the end.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -59,9 +59,10 @@ pickout is registered but not yet routed. To send file dialogs to it, set
   org.freedesktop.impl.portal.FileChooser=pickout;
 
 in $config/xdg-desktop-portal/portals.conf, or in the <desktop>-portals.conf
-for the session in use — niri-portals.conf on this machine — then
+for the session in use, then
 
   systemctl --user restart xdg-desktop-portal.service
 
-To go back, put termfilechooser back on that line and restart the same unit.
+To go back, put whatever was on that line before back, and restart the same
+unit.
 MSG

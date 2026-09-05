@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Runs the dialog under a pty and prints the screen it ended up drawing.
 
-Grown from `reference/ptyharness.py`, which proved two things the hard way and
-both still apply: keys must arrive in **paced chunks**, because an application
-in raw mode flushes pending input when it re-arms and a single burst gets
-eaten; and a real Return is **CR**, not LF.
+Two things this proved the hard way and that both still apply: keys must
+arrive in **paced chunks**, because an application in raw mode flushes pending
+input when it re-arms and a single burst gets eaten; and a real Return is
+**CR**, not LF.
 
 What is added here is the screen. Dumping the raw byte stream shows every
 repaint interleaved, which is unreadable and untestable; this keeps a grid and

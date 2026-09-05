@@ -588,9 +588,9 @@ impl App {
             }
             SaveTarget::New { path, parents } => {
                 // The directories are made; the file is not. A save dialog
-                // answers where to write and the application does the writing —
-                // creating the file here is what littered this machine with
-                // stub files under the setup being replaced.
+                // answers where to write and the application does the writing.
+                // Creating it here leaves an empty stub behind every time the
+                // application then declines to write.
                 for parent in &parents {
                     if let Err(err) = std::fs::create_dir(parent) {
                         self.message = Some(format!("{}: {err}", parent.display()));
