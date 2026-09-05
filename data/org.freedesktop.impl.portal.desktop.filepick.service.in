@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.impl.portal.desktop.filepick
-Exec=@BINARY@ --serve
-SystemdService=filepick.service

@@ -1,12 +1,12 @@
-# filepick
+# pickout
 
 A terminal file chooser that is its own portal backend. One binary, two modes:
 
 ```
-app ──D-Bus──> filepick --serve            portal backend, D-Bus activated
+app ──D-Bus──> pickout --serve            portal backend, D-Bus activated
                     │
-                    └─spawn─> kitty --app-id=filepick -- \
-                                filepick --dialog <request.json> <response.json>
+                    └─spawn─> kitty --app-id=pickout -- \
+                                pickout --dialog <request.json> <response.json>
 ```
 
 `HANDOFF.md` is the design document — what this replaces, why, and the traps
@@ -16,7 +16,7 @@ that cost time the first time round. This file is where it currently stands.
 
 Both halves work, and everything the portal interface can ask for is answered.
 The interface is the single screen the design asks for — browser and Name field
-visible at once, both live. This machine's file dialogs are routed to filepick;
+visible at once, both live. This machine's file dialogs are routed to pickout;
 what is left is living with it and finding out what the tests could not.
 
 Working:
@@ -38,7 +38,7 @@ Working:
   `creates 2 directories`, `is a directory` — and takes two `Enter`s to
   overwrite
 - the application's filters applied to the listing, `^F` to cycle them, and an
-  "all files" entry of filepick's own so a filter can always be got out of
+  "all files" entry of pickout's own so a filter can always be got out of
 - `^P`: every directory under `$HOME`, ranked as you type, walked in the
   background so the dialog opens at once
 - `Space` to mark, in the modes that take more than one answer; marks survive
@@ -81,12 +81,12 @@ tests/dialog.sh    # the chooser, driven through a pty
 tests/portal.sh    # the D-Bus backend, on a private bus, no window, no human
 ```
 
-`tests/portal.sh` stubs the terminal out with `FILEPICK_TERMINAL` — anything
+`tests/portal.sh` stubs the terminal out with `PICKOUT_TERMINAL` — anything
 that takes a command and blocks until it exits will do — and its last section
 uses the pty harness as that terminal, so the two halves are checked against
 each other rather than each against a stub of its own making.
 
-Both suites point `FILEPICK_CONFIG` at a file of their own, so the developer's
+Both suites point `PICKOUT_CONFIG` at a file of their own, so the developer's
 settings are not silently part of the result.
 
 `tests/screen.py` is the harness: it runs a command under a pty, feeds
@@ -97,26 +97,26 @@ LF.
 
 ## Install
 
-filepick is four files. `./install.sh` is what this machine uses to put them in
+pickout is four files. `./install.sh` is what this machine uses to put them in
 place, and it is not the only way in — a package, a Nix module or a hand-written
 drop-in wires up the same four, wherever the session expects them.
 
 | File | Where | What it does |
 | --- | --- | --- |
-| `filepick` | `~/.local/bin` | the binary, in both its modes |
-| `filepick.portal` | `$XDG_DATA_HOME/xdg-desktop-portal/portals` | declares which interface this backend implements, and `UseIn` the sessions it may be chosen in — that line is yours to narrow |
-| `org.freedesktop.impl.portal.desktop.filepick.service` | `$XDG_DATA_HOME/dbus-1/services` | lets D-Bus start the daemon on demand |
-| `filepick.service` | `$XDG_CONFIG_HOME/systemd/user` | optional: puts the daemon under the user manager, for `systemctl --user status filepick` and `Restart=on-failure` |
+| `pickout` | `~/.local/bin` | the binary, in both its modes |
+| `pickout.portal` | `$XDG_DATA_HOME/xdg-desktop-portal/portals` | declares which interface this backend implements, and `UseIn` the sessions it may be chosen in — that line is yours to narrow |
+| `org.freedesktop.impl.portal.desktop.pickout.service` | `$XDG_DATA_HOME/dbus-1/services` | lets D-Bus start the daemon on demand |
+| `pickout.service` | `$XDG_CONFIG_HOME/systemd/user` | optional: puts the daemon under the user manager, for `systemctl --user status pickout` and `Restart=on-failure` |
 
 The D-Bus service file names the systemd unit, so activation goes through the
 user manager where there is one. **Without systemd**, drop the
 `SystemdService=` line and the last file with it: D-Bus then runs `Exec=`
 directly and everything else is unchanged.
 
-Registering is not routing. To send file dialogs to filepick, set
+Registering is not routing. To send file dialogs to pickout, set
 
 ```
-org.freedesktop.impl.portal.FileChooser=filepick;
+org.freedesktop.impl.portal.FileChooser=pickout;
 ```
 
 in `$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf`, or in the
@@ -128,15 +128,15 @@ whatever was there before.
 The switch-over is worth checking without a window in the way: point the
 `terminal` setting at a script that runs `tests/screen.py` and drive the real
 dialog with `KEYS`. A frontend call then goes app → `xdg-desktop-portal` →
-filepick → dialog → URI with nothing stubbed but the terminal.
+pickout → dialog → URI with nothing stubbed but the terminal.
 
 ## Configuration
 
 All optional; the defaults are what this machine wants.
-`$XDG_CONFIG_HOME/filepick/config.toml`, or the file `FILEPICK_CONFIG` names:
+`$XDG_CONFIG_HOME/pickout/config.toml`, or the file `PICKOUT_CONFIG` names:
 
 ```toml
-terminal = "kitty --app-id=filepick --"   # split on whitespace; must block
+terminal = "kitty --app-id=pickout --"   # split on whitespace; must block
 open_dir = "suggested"                    # suggested | last | an absolute path
 save_dir = "last"                         # last overrides the application on
                                           # purpose — see src/portal.rs
@@ -151,9 +151,9 @@ save_dir = "last"                         # last overrides the application on
 ```
 
 The daemon is started by D-Bus, which does not inherit a shell's exports, so
-the file is the route that is always open to it. `FILEPICK_TERMINAL`,
-`FILEPICK_OPEN_DIR` and `FILEPICK_SAVE_DIR` still override it where the
-environment does reach — the tests use them — and `RUST_LOG=filepick=debug`
+the file is the route that is always open to it. `PICKOUT_TERMINAL`,
+`PICKOUT_OPEN_DIR` and `PICKOUT_SAVE_DIR` still override it where the
+environment does reach — the tests use them — and `RUST_LOG=pickout=debug`
 watches requests arrive.
 
 Keys are written the way the footer draws them, so a line copied off the screen
@@ -181,7 +181,17 @@ exist, an action bound where it could do nothing: each costs its own line and
 says so on the message line. A dialog that failed to start would reach the
 application as a cancel it could not tell from a real one.
 
-The `filepick` app-id is matched by a `window-rule` in `~/.config/niri/config.kdl`,
+The `pickout` app-id is matched by a `window-rule` in `~/.config/niri/config.kdl`,
 which floats the window. Changing one without the other fails silently — and a
 `terminal` setting that replaces the kitty invocation has to set the app-id
 itself, or the rule stops matching.
+
+## License
+
+Licensed under either of
+[Apache License, Version 2.0](https://github.com/Capacap/pickout/blob/main/LICENSE-APACHE)
+or [MIT license](https://github.com/Capacap/pickout/blob/main/LICENSE-MIT)
+at your option. Unless you explicitly
+state otherwise, any contribution intentionally submitted for
+inclusion in the work by you shall be dual licensed as above, without
+any additional terms or conditions.

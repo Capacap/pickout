@@ -11,7 +11,7 @@ repaint interleaved, which is unreadable and untestable; this keeps a grid and
 replays the escape sequences into it, so what comes out is what a person would
 have been looking at when the program exited.
 
-    KEYS='\\x1b[B\\x00\\r' tests/screen.py -- ./filepick --dialog req.json res.json
+    KEYS='\\x1b[B\\x00\\r' tests/screen.py -- ./pickout --dialog req.json res.json
 
 Setting `STYLES` to a path additionally writes what each run of text was drawn
 in. Without it nothing in the suite can see a colour, and every span could be

@@ -1,4 +1,4 @@
-//! filepick — a terminal file chooser that is its own portal backend.
+//! pickout — a terminal file chooser that is its own portal backend.
 //!
 //! One binary, two modes. The daemon half answers D-Bus and has no terminal, so
 //! it spawns one running this same binary in dialog mode. Making both ends the
@@ -23,15 +23,15 @@ use tokio::signal::unix::{SignalKind, signal};
 
 const USAGE: &str = "\
 usage:
-  filepick --serve                          run as the portal backend
-  filepick --dialog <request> <response>    run the chooser in this terminal
+  pickout --serve                          run as the portal backend
+  pickout --dialog <request> <response>    run the chooser in this terminal
 ";
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "filepick=info".into()),
+                .unwrap_or_else(|_| "pickout=info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -75,7 +75,7 @@ fn serve() -> Result<()> {
                 tracing::warn!("{problem}");
             }
 
-            ashpd::backend::Builder::new("org.freedesktop.impl.portal.desktop.filepick")?
+            ashpd::backend::Builder::new("org.freedesktop.impl.portal.desktop.pickout")?
                 .file_chooser(portal::FileChooser::new(&config))
                 .build()
                 .await?;

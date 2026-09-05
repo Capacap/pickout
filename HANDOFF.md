@@ -1,4 +1,4 @@
-# filepick — a TUI file chooser that is its own portal backend
+# pickout — a TUI file chooser that is its own portal backend
 
 Status: **in progress.** This document is the design — what is being replaced,
 why, and the traps worth not re-learning. `README.md` says where the build
@@ -54,10 +54,10 @@ that split is unavoidable. Making both ends the same program is what removes
 the fragility.
 
 ```
-app ──D-Bus──> filepick --serve          (portal backend, systemd user service)
+app ──D-Bus──> pickout --serve          (portal backend, systemd user service)
                     │
-                    └─spawn─> foot -a termfilechooser -e filepick --dialog \
-                                    --request /run/user/1000/filepick/req.json \
+                    └─spawn─> foot -a termfilechooser -e pickout --dialog \
+                                    --request /run/user/1000/pickout/req.json \
                                     --response .../res.json
 ```
 
@@ -185,7 +185,7 @@ Two harnesses, both proven in the session that produced this document.
 writes a fixed path and returns, then:
 
 ```sh
-busctl --user call org.freedesktop.impl.portal.desktop.filepick \
+busctl --user call org.freedesktop.impl.portal.desktop.pickout \
   /org/freedesktop/portal/desktop org.freedesktop.impl.portal.FileChooser \
   SaveFile "osssa{sv}" /org/test/req com.test "" "Save" 0
 ```

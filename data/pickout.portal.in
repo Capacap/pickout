@@ -1,4 +1,4 @@
 [portal]
-DBusName=org.freedesktop.impl.portal.desktop.filepick
+DBusName=org.freedesktop.impl.portal.desktop.pickout
 Interfaces=org.freedesktop.impl.portal.FileChooser;
 UseIn=niri;bspwm;Budgie;Cinnamon;COSMIC;dwl;GNOME;Hyprland;i3;KDE;lxde;LXQt;mate;openbox;pantheon;river;sway;unity;Wayfire;wlroots;XFCE;

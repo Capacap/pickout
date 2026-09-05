@@ -87,7 +87,7 @@ pub struct App {
     pub list: ListState,
     pub query: String,
     pub name: Field,
-    /// Which of the application's filters is in force. `None` is filepick's own
+    /// Which of the application's filters is in force. `None` is pickout's own
     /// "all files": the portal has no such entry, but being unable to see a
     /// file you know is there is worse than a filter that lapses.
     pub filter: Option<usize>,

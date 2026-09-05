@@ -296,7 +296,7 @@ impl fmt::Display for Key {
     }
 }
 
-/// Every binding filepick ships with. Written as the config file would write
+/// Every binding pickout ships with. Written as the config file would write
 /// them, so the defaults and a user's overrides go through the same parser.
 const DEFAULTS: &[(Context, &str, Action)] = &[
     (Context::Global, "^S", Action::Commit),

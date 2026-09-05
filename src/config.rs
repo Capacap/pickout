@@ -28,7 +28,7 @@ pub struct Config {
     pub save_dir: Option<String>,
 
     /// `[keys.<context>]` tables, each mapping a key to an action. Held as
-    /// strings so that a name filepick does not know is reported against the
+    /// strings so that a name pickout does not know is reported against the
     /// file it came from rather than failing to deserialise the whole of it.
     pub keys: BTreeMap<String, BTreeMap<String, String>>,
 
@@ -65,9 +65,9 @@ impl Config {
     /// so that the precedence is stated once instead of once per setting.
     fn apply_env(&mut self) {
         for (var, field) in [
-            ("FILEPICK_TERMINAL", &mut self.terminal),
-            ("FILEPICK_OPEN_DIR", &mut self.open_dir),
-            ("FILEPICK_SAVE_DIR", &mut self.save_dir),
+            ("PICKOUT_TERMINAL", &mut self.terminal),
+            ("PICKOUT_OPEN_DIR", &mut self.open_dir),
+            ("PICKOUT_SAVE_DIR", &mut self.save_dir),
         ] {
             if let Ok(value) = std::env::var(var)
                 && !value.trim().is_empty()
@@ -85,16 +85,16 @@ impl Config {
     }
 }
 
-/// `FILEPICK_CONFIG` names the file outright, which is what the tests use to
+/// `PICKOUT_CONFIG` names the file outright, which is what the tests use to
 /// keep the developer's own settings out of them.
 fn path() -> PathBuf {
-    if let Some(path) = std::env::var_os("FILEPICK_CONFIG") {
+    if let Some(path) = std::env::var_os("PICKOUT_CONFIG") {
         return PathBuf::from(path);
     }
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config"))
-        .join("filepick/config.toml")
+        .join("pickout/config.toml")
 }
 
 /// The anchor for every path that belongs to the user rather than to the
@@ -118,15 +118,15 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_not_a_problem() {
-        let config = Config::read(std::path::Path::new("/nonexistent/filepick/config.toml"));
+        let config = Config::read(std::path::Path::new("/nonexistent/pickout/config.toml"));
         assert!(config.problem.is_none());
         assert!(config.terminal.is_none());
     }
 
     #[test]
     fn settings_are_read() {
-        let config = read("terminal = \"foot -a filepick\"\nsave_dir = \"/tmp\"\n");
-        assert_eq!(config.terminal.as_deref(), Some("foot -a filepick"));
+        let config = read("terminal = \"foot -a pickout\"\nsave_dir = \"/tmp\"\n");
+        assert_eq!(config.terminal.as_deref(), Some("foot -a pickout"));
         assert_eq!(config.save_dir.as_deref(), Some("/tmp"));
         assert!(config.problem.is_none());
     }

@@ -1,6 +1,6 @@
 //! The daemon/dialog contract.
 //!
-//! The two halves of filepick are the same binary in different modes, and
+//! The two halves of pickout are the same binary in different modes, and
 //! everything they say to each other passes through these types as JSON in a
 //! file under `$XDG_RUNTIME_DIR`. That is deliberate: the setup this replaces
 //! used positional argv plus a bare temp file, an undocumented shape that had

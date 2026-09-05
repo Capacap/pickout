@@ -3,7 +3,7 @@
 # bus so it cannot collide with the real one or with whatever is currently
 # routing file dialogs.
 #
-# The terminal is stubbed out by FILEPICK_TERMINAL. Anything that takes a
+# The terminal is stubbed out by PICKOUT_TERMINAL. Anything that takes a
 # command and blocks until it exits will do, which is the whole of what the
 # daemon asks of a terminal. Most of this stands a script in for the dialog so
 # the daemon is tested alone; the last section runs the real dialog under the
@@ -20,7 +20,7 @@ if [[ ${1:-} != --inner ]]; then
     exec dbus-run-session -- "${BASH_SOURCE[0]}" --inner
 fi
 
-bus=org.freedesktop.impl.portal.desktop.filepick
+bus=org.freedesktop.impl.portal.desktop.pickout
 obj=/org/freedesktop/portal/desktop
 iface=org.freedesktop.impl.portal.FileChooser
 
@@ -30,7 +30,7 @@ trap 'kill "$daemon" 2>/dev/null || true; rm -rf -- "$tmp"' EXIT
 
 export XDG_RUNTIME_DIR="$tmp/run" XDG_STATE_HOME="$tmp/state" HOME="$tmp/home"
 # The developer's own settings are not part of the test.
-export FILEPICK_CONFIG="$tmp/config.toml"
+export PICKOUT_CONFIG="$tmp/config.toml"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$HOME/Pictures"
 
 # ashpd asks for the bus name without allowing replacement, so swapping the
@@ -42,8 +42,8 @@ start_daemon() {
         kill "$daemon" 2>/dev/null || true
         wait "$daemon" 2>/dev/null || true
     fi
-    env FILEPICK_TERMINAL="$terminal" "$@" \
-        "$root/target/debug/filepick" --serve >>"$tmp/daemon.log" 2>&1 &
+    env PICKOUT_TERMINAL="$terminal" "$@" \
+        "$root/target/debug/pickout" --serve >>"$tmp/daemon.log" 2>&1 &
     daemon=$!
     for _ in $(seq 50); do
         busctl --user status "$bus" >/dev/null 2>&1 && return
@@ -58,13 +58,13 @@ start_daemon() {
 # file and nothing in the environment. The daemon is D-Bus activated in real
 # use, so the file is the only route that is always open to it.
 start_configured() {
-    printf '%s\n' "$1" > "$FILEPICK_CONFIG"
+    printf '%s\n' "$1" > "$PICKOUT_CONFIG"
     if [[ -n $daemon ]]; then
         kill "$daemon" 2>/dev/null || true
         wait "$daemon" 2>/dev/null || true
     fi
-    env -u FILEPICK_TERMINAL -u FILEPICK_SAVE_DIR -u FILEPICK_OPEN_DIR \
-        "$root/target/debug/filepick" --serve >>"$tmp/daemon.log" 2>&1 &
+    env -u PICKOUT_TERMINAL -u PICKOUT_SAVE_DIR -u PICKOUT_OPEN_DIR \
+        "$root/target/debug/pickout" --serve >>"$tmp/daemon.log" 2>&1 &
     daemon=$!
     for _ in $(seq 50); do
         busctl --user status "$bus" >/dev/null 2>&1 && return
@@ -113,13 +113,13 @@ request = json.load(open(sys.argv[3]))
 start, mode = request["start_dir"], request["mode"]
 
 if mode == "save_file":
-    paths = [os.path.join(start, request["current_name"] or "filepick-stub")]
+    paths = [os.path.join(start, request["current_name"] or "pickout-stub")]
 elif "save_files" in mode:
     paths = [os.path.join(start, name) for name in mode["save_files"]["names"]]
 elif "open_directory" in mode:
     paths = [start]
 else:
-    paths = [os.path.join(start, "filepick-stub")]
+    paths = [os.path.join(start, "pickout-stub")]
 
 json.dump(
     {"outcome": "selected", "paths": paths, "filter": request["current_filter"]},
@@ -139,7 +139,7 @@ check "SaveFile returns the suggested name in the start directory" \
     "$(call SaveFile osssa{sv} /t/1 com.test "" Save 1 current_name s board.corkboard)"
 
 check "current_folder arrives as a byte array and is honoured" \
-    "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/filepick-stub\"" \
+    "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/pickout-stub\"" \
     "$(call OpenFile osssa{sv} /t/2 com.test "" Open 1 current_folder ay $(bytes "$HOME/Pictures"))"
 
 check "directory mode answers with a directory" \
@@ -161,7 +161,7 @@ check "filters survive and the chosen one comes back" \
 
 check "no scratch files are left behind" \
     "" \
-    "$(ls -A "$XDG_RUNTIME_DIR/filepick" 2>/dev/null)"
+    "$(ls -A "$XDG_RUNTIME_DIR/pickout" 2>/dev/null)"
 
 echo
 echo "where the dialog opens"
@@ -170,7 +170,7 @@ echo "where the dialog opens"
 # exist yet — that is what a save is. The daemon being replaced stat'ed the
 # returned path and abandoned the whole success reply on ENOENT, so every save
 # silently did nothing, and it created the file up front to avoid that.
-start_daemon "python3 $stub" FILEPICK_SAVE_DIR=suggested
+start_daemon "python3 $stub" PICKOUT_SAVE_DIR=suggested
 check "suggested: the application's folder is used" \
     "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/brand-new.corkboard\"" \
     "$(call SaveFile osssa{sv} /t/6 com.test "" Save 2 \
@@ -185,7 +185,7 @@ check "a path that does not exist is still a valid answer" \
 # equivalent gave up — it stat'ed first, so it never learned anything from a save.
 check "the directory it landed in is remembered" \
     "$HOME/Pictures" \
-    "$(cat "$XDG_STATE_HOME/filepick/last_dir")"
+    "$(cat "$XDG_STATE_HOME/pickout/last_dir")"
 
 # `last` is the default for saves and deliberately overrides the application:
 # most GTK apps propose ~/Documents for every save regardless of what is being
@@ -212,8 +212,8 @@ check "the terminal comes from the file when the environment is empty" \
 
 # A file it cannot parse must not take the dialog down with it: a daemon that
 # fails to answer is a cancel the application cannot tell from a real one.
-printf 'save_dir = "suggested"\nnonsense =\n' > "$FILEPICK_CONFIG"
-start_daemon "python3 $stub" FILEPICK_SAVE_DIR=suggested
+printf 'save_dir = "suggested"\nnonsense =\n' > "$PICKOUT_CONFIG"
+start_daemon "python3 $stub" PICKOUT_SAVE_DIR=suggested
 check "a file it cannot parse still answers" \
     "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/broken-config.corkboard\"" \
     "$(call SaveFile osssa{sv} /t/21 com.test "" Save 2 \
@@ -223,7 +223,7 @@ check "a file it cannot parse still answers" \
 check "and says which file and why" "said" \
     "$(grep -q 'ignoring .*config.toml' "$tmp/daemon.log" && echo said || echo silent)"
 
-: > "$FILEPICK_CONFIG"
+: > "$PICKOUT_CONFIG"
 
 echo
 echo "how a dialog can end"
@@ -264,7 +264,7 @@ check "Close kills the dialog" \
 
 check "Close cleans up after the dialog" \
     "" \
-    "$(ls -A "$XDG_RUNTIME_DIR/filepick" 2>/dev/null)"
+    "$(ls -A "$XDG_RUNTIME_DIR/pickout" 2>/dev/null)"
 
 # Everything above stubs the dialog out, which proves the daemon and says
 # nothing about whether the two halves read the same JSON. Here the terminal is
@@ -273,8 +273,8 @@ echo
 echo "the two halves together"
 
 start_daemon "python3 $root/tests/screen.py --" \
-    FILEPICK_SAVE_DIR=suggested \
-    FILEPICK_OPEN_DIR=suggested \
+    PICKOUT_SAVE_DIR=suggested \
+    PICKOUT_OPEN_DIR=suggested \
     KEYS='\x15board.corkboard\x00\r'
 check "a name typed into the real dialog comes back as a URI" \
     "ua{sv} 0 1 \"uris\" as 1 \"file://$HOME/Pictures/board.corkboard\"" \
@@ -283,7 +283,7 @@ check "a name typed into the real dialog comes back as a URI" \
         current_folder ay $(bytes "$HOME/Pictures"))"
 
 start_daemon "python3 $root/tests/screen.py --" \
-    FILEPICK_OPEN_DIR=suggested \
+    PICKOUT_OPEN_DIR=suggested \
     KEYS='\x1b'
 check "and Esc in the real dialog is a cancel" \
     "ua{sv} 1 0" \

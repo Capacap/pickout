@@ -23,7 +23,7 @@ use tokio::process::Command;
 use crate::config::Config;
 
 /// Matches the `window-rule` in niri's config.
-pub const APP_ID: &str = "filepick";
+pub const APP_ID: &str = "pickout";
 
 #[derive(Debug, Clone)]
 pub struct Terminal {
@@ -93,7 +93,7 @@ mod tests {
     fn default_is_kitty_with_the_app_id_the_float_rule_matches() {
         let argv = Terminal::default().argv;
         assert_eq!(argv[0], OsStr::new("kitty"));
-        assert!(argv.iter().any(|a| a == OsStr::new("--app-id=filepick")));
+        assert!(argv.iter().any(|a| a == OsStr::new("--app-id=pickout")));
         assert_eq!(argv.last().unwrap(), OsStr::new("--"));
     }
 }

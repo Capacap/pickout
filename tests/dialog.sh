@@ -12,7 +12,7 @@
 set -u
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-binary="$root/target/debug/filepick"
+binary="$root/target/debug/pickout"
 screen="$root/tests/screen.py"
 
 if [[ ! -x $binary ]]; then
@@ -24,7 +24,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 export HOME=$tmp
 # The developer's own settings are not part of the test.
-export FILEPICK_CONFIG="$tmp/config.toml"
+export PICKOUT_CONFIG="$tmp/config.toml"
 
 # A tree with one of everything the interface has to say something about.
 mkdir -p "$tmp/Pictures/Screenshots" "$tmp/Pictures/ref"
@@ -392,7 +392,7 @@ run filtered '\x06'
 check "^F moves to the next filter" "bern_copy.corkboard 31.5 kB" "$(row 7)"
 
 run filtered '\x06\x00\x06'
-check "and then to filepick's own all files" \
+check "and then to pickout's own all files" \
     "Enter open ^F all files ^P jump ^L path M-h hidden Esc cancel" "$(footer)"
 check "which is the whole listing back" "bern_copy.corkboard 31.5 kB" "$(row 7)"
 check "every bit of it" "photo.png 1.2 MB" "$(row 8)"
@@ -455,7 +455,7 @@ check "Esc comes back to the browser" "~/Pictures" "$(row 2)"
 echo
 echo "keys from the config file"
 
-cat > "$FILEPICK_CONFIG" <<'TOML'
+cat > "$PICKOUT_CONFIG" <<'TOML'
 [keys.global]
 "^E" = "commit"
 
@@ -475,7 +475,7 @@ check "the footer advertises the key that was bound, not the one shipped" \
     "$(footer)"
 
 # A line it cannot use must cost that line and nothing else.
-cat > "$FILEPICK_CONFIG" <<'TOML'
+cat > "$PICKOUT_CONFIG" <<'TOML'
 [keys.list]
 "^N" = "down"
 "^Q" = "descnd"
@@ -489,7 +489,7 @@ run save ''
 check "and the screen says which line it was" \
     '~/Pictures keys.list: there is no action called "descnd"' "$(row 2)"
 
-: > "$FILEPICK_CONFIG"
+: > "$PICKOUT_CONFIG"
 
 echo "colours"
 
