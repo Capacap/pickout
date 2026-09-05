@@ -10,9 +10,10 @@ stops. No fuzzy filter, no typing a path, no jumping to the directory you
 were in five minutes ago. pickout puts those back, and keeps the browser
 and the Name field on one screen so saving stays a single question.
 
-![Saving an image from a browser: the listing and the Name field on one
-screen, with the application's own PNG filter named in the
-footer](https://raw.githubusercontent.com/Capacap/pickout/main/.github/screenshot.png)
+![A save dialog opened by a browser: the listing with file sizes, the
+application's own PNG filter named in the footer, and the Name field
+warning that the name it was given already
+exists](https://raw.githubusercontent.com/Capacap/pickout/main/.github/screenshot.png)
 
 ## Usage
 
