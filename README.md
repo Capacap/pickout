@@ -10,12 +10,9 @@ stops. No fuzzy filter, no typing a path, no jumping to the directory you
 were in five minutes ago. pickout puts those back, and keeps the browser
 and the Name field on one screen so saving stays a single question.
 
-```
-app ──D-Bus──> pickout --serve            portal backend, D-Bus activated
-                    │
-                    └─spawn─> kitty --app-id=pickout -- \
-                                pickout --dialog <request.json> <response.json>
-```
+![Saving an image from a browser: the listing and the Name field on one
+screen, with the application's own PNG filter named in the
+footer](https://raw.githubusercontent.com/Capacap/pickout/main/.github/screenshot.png)
 
 ## Usage
 
@@ -59,6 +56,13 @@ footer says the key you chose.
 
 Requires a session running `xdg-desktop-portal`, and a terminal emulator
 that stays in the foreground until the command it was given exits.
+
+```
+app ──D-Bus──> pickout --serve            portal backend, D-Bus activated
+                    │
+                    └─spawn─> kitty --app-id=pickout -- \
+                                pickout --dialog <request.json> <response.json>
+```
 
 pickout is four files, and `cargo install pickout` places only the first
 of them. `./install.sh` puts all four where a user session looks:

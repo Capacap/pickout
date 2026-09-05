@@ -10,6 +10,7 @@ description = "Terminal file chooser that is its own XDG desktop portal backend"
 readme = "README.md"
 keywords = ["portal", "file-chooser", "tui", "wayland", "ratatui"]
 categories = ["command-line-utilities", "command-line-interface"]
+exclude = [".github"]
 
 [dependencies]
 ashpd = { version = "0.13", default-features = false, features = [
