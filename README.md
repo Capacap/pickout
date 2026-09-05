@@ -1,6 +1,14 @@
 # pickout
 
-A terminal file chooser that is its own portal backend. One binary, two modes:
+A terminal file chooser that is its own XDG desktop portal backend. When
+an application asks the desktop for a file, pickout opens in a terminal
+window and browses there, and what you pick goes back as though the GTK
+dialog had returned it.
+
+If you work in the terminal, the file dialog is where the muscle memory
+stops. No fuzzy filter, no typing a path, no jumping to the directory you
+were in five minutes ago. pickout puts those back, and keeps the browser
+and the Name field on one screen so saving stays a single question.
 
 ```
 app ──D-Bus──> pickout --serve            portal backend, D-Bus activated
@@ -9,109 +17,70 @@ app ──D-Bus──> pickout --serve            portal backend, D-Bus activate
                                 pickout --dialog <request.json> <response.json>
 ```
 
-`HANDOFF.md` is the design document — what this replaces, why, and the traps
-that cost time the first time round. This file is where it currently stands.
+## Usage
 
-## State
-
-Both halves work, and everything the portal interface can ask for is answered.
-The interface is the single screen the design asks for — browser and Name field
-visible at once, both live. This machine's file dialogs are routed to pickout;
-what is left is living with it and finding out what the tests could not.
-
-Working:
-
-- `OpenFile`, `SaveFile`, `SaveFiles`, single / multiple / directory modes
-- `filters` and `current_filter`, both directions — the option the daemon being
-  replaced dropped with `dbus: unknown option filters`
-- `current_folder` / `current_file` as NUL-terminated byte arrays, `current_name`
-  as a string
-- start-directory policy per mode, `last` by default for saves
-- cancel, a dialog that writes nothing, a dialog that dies, and an application
-  that withdraws its request mid-dialog — all answered as a cancel, and the
-  last of those takes the terminal down with it
-- `src/model.rs`: directory listing, `~` expansion, names carrying `/`,
-  relative fragments, what a typed name would overwrite or have to create,
-  glob and MIME filter matching
-- the chooser: browse, type to filter fuzzily, `M-h` for dotfiles, `^L` to type
-  a path, a live Name field that says what committing would do — `exists`,
-  `creates 2 directories`, `is a directory` — and takes two `Enter`s to
-  overwrite
-- the application's filters applied to the listing, `^F` to cycle them, and an
-  "all files" entry of pickout's own so a filter can always be got out of
-- `^P`: every directory under `$HOME`, ranked as you type, walked in the
-  background so the dialog opens at once
-- `Space` to mark, in the modes that take more than one answer; marks survive
-  changing directory, and once anything is marked the marks are the whole
-  answer — the cursor is where navigating left it, not something chosen
-- `SaveFiles`: the names the application is about to write, and how many of them
-  already exist in the directory the cursor is on
-- keys, the terminal and the start-directory policy from a config file, with one
-  binding table behind both the dispatcher and the footer
-
-## Keys
+You never run pickout yourself. An application opens a file dialog, the
+portal starts the daemon, and the daemon spawns a terminal window with
+the chooser inside it.
 
 | | In the list | In the Name field |
 | --- | --- | --- |
 | `Enter` | descend, or copy the file's name into Name (open mode: open it) | commit |
 | `Tab` | to the Name field | back to the list |
-| `Left` / `Right` | up a directory / descend | — |
+| `Left` / `Right` | up a directory / descend | |
 | typing | filters the listing | edits the name |
 | `Space` | marks the row, where more than one answer is wanted | a space |
 | `Esc` | clears the filter, then cancels | cancels |
 
-`^S` and `M-Enter` commit from anywhere, `^P` opens the jump list, `^F` cycles
-the application's filters, `^L` makes the path bar editable, `M-h` toggles
-dotfiles, `^W` / `^U` / `^K` / `^A` / `^E` edit as readline does.
+`^S` and `M-Enter` commit from anywhere, `^P` opens the jump list, `^F`
+cycles the application's filters, `^L` makes the path bar editable,
+`M-h` toggles dotfiles, and `^W` / `^U` / `^K` / `^A` / `^E` edit as
+readline does.
 
-`Enter` means two things, but never in one place: in the list it descends, in
-the Name field it commits. Meaning both in one place is what made the browser
-this replaces unusable for saving.
+`Enter` means two things, but never in one place. In the list it
+descends, in the Name field it commits. Meaning both at once is what
+made the browser this replaces unusable for saving.
 
-The footer is not a written-down copy of any of this. It asks the same table the
-dispatcher asks — which key does this, and does it do anything here — so a key
-it names is a key that works, and one that works in the pane you are in gets
-named. Rebind something and the footer says the key you chose.
+The Name field says what committing would do before you commit, whether
+that is `exists`, `creates 2 directories` or `is a directory`.
+Overwriting takes two `Enter`s. `Space` marks a row in the modes that
+take more than one answer, and marks survive changing directory: once
+anything is marked, the marks are the whole answer.
 
-## Build and test
+`^P` ranks every directory under `$HOME` as you type. The walk runs in
+the background, so the dialog still opens at once.
+
+The footer is not a written-down copy of any of this. It asks the same
+table the dispatcher asks, so a key it names is a key that works, and one
+that works in the pane you are in gets named. Rebind something and the
+footer says the key you chose.
+
+## Installation
+
+Requires a session running `xdg-desktop-portal`, and a terminal emulator
+that stays in the foreground until the command it was given exits.
+
+pickout is four files, and `cargo install pickout` places only the first
+of them. `./install.sh` puts all four where a user session looks:
 
 ```sh
-cargo test         # pure logic: wire protocol, URIs, directory policy, the model
-tests/dialog.sh    # the chooser, driven through a pty
-tests/portal.sh    # the D-Bus backend, on a private bus, no window, no human
+git clone https://github.com/Capacap/pickout
+cd pickout && ./install.sh
 ```
 
-`tests/portal.sh` stubs the terminal out with `PICKOUT_TERMINAL` — anything
-that takes a command and blocks until it exits will do — and its last section
-uses the pty harness as that terminal, so the two halves are checked against
-each other rather than each against a stub of its own making.
+| File | Where |
+| --- | --- |
+| `pickout` | `~/.local/bin` |
+| `pickout.portal` | `$XDG_DATA_HOME/xdg-desktop-portal/portals` |
+| `org.freedesktop.impl.portal.desktop.pickout.service` | `$XDG_DATA_HOME/dbus-1/services` |
+| `pickout.service` | `$XDG_CONFIG_HOME/systemd/user` |
 
-Both suites point `PICKOUT_CONFIG` at a file of their own, so the developer's
-settings are not silently part of the result.
-
-`tests/screen.py` is the harness: it runs a command under a pty, feeds
-keystrokes in paced chunks and prints the screen that was drawn. Two rules it
-learned the hard way and that still bite — keys must arrive in chunks, because
-an application in raw mode eats a burst; and a real Return is CR (`\r`), never
-LF.
-
-## Install
-
-pickout is four files. `./install.sh` is what this machine uses to put them in
-place, and it is not the only way in — a package, a Nix module or a hand-written
-drop-in wires up the same four, wherever the session expects them.
-
-| File | Where | What it does |
-| --- | --- | --- |
-| `pickout` | `~/.local/bin` | the binary, in both its modes |
-| `pickout.portal` | `$XDG_DATA_HOME/xdg-desktop-portal/portals` | declares which interface this backend implements, and `UseIn` the sessions it may be chosen in — that line is yours to narrow |
-| `org.freedesktop.impl.portal.desktop.pickout.service` | `$XDG_DATA_HOME/dbus-1/services` | lets D-Bus start the daemon on demand |
-| `pickout.service` | `$XDG_CONFIG_HOME/systemd/user` | optional: puts the daemon under the user manager, for `systemctl --user status pickout` and `Restart=on-failure` |
-
-The D-Bus service file names the systemd unit, so activation goes through the
-user manager where there is one. **Without systemd**, drop the
-`SystemdService=` line and the last file with it: D-Bus then runs `Exec=`
-directly and everything else is unchanged.
+The `.portal` file declares which interface the backend implements and,
+in `UseIn`, the sessions it may be chosen in. That line ships wide and is
+yours to narrow. The D-Bus service file starts the daemon on demand and
+names the systemd unit, so activation goes through the user manager where
+there is one. Without systemd, drop the `SystemdService=` line and the
+unit with it, and D-Bus runs `Exec=` directly instead.
 
 Registering is not routing. To send file dialogs to pickout, set
 
@@ -121,27 +90,28 @@ org.freedesktop.impl.portal.FileChooser=pickout;
 
 in `$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf`, or in the
 `<desktop>-portals.conf` for the session in use, then restart
-`xdg-desktop-portal`. The two stay separate on purpose: installing and
-switching over are separate decisions, and going back is the same line with
-whatever was there before.
+`xdg-desktop-portal`. The two steps stay separate on purpose, so
+installing and switching over are separate decisions, and going back is
+the same line with whatever was on it before.
 
-The switch-over is worth checking without a window in the way: point the
-`terminal` setting at a script that runs `tests/screen.py` and drive the real
-dialog with `KEYS`. A frontend call then goes app → `xdg-desktop-portal` →
-pickout → dialog → URI with nothing stubbed but the terminal.
+Compositors that tile by default want a float rule matching the `pickout`
+app-id; a niri example is in
+[contrib/niri.kdl](https://github.com/Capacap/pickout/blob/main/contrib/niri.kdl).
+Changing the app-id without the rule fails silently, and the dialog opens
+as an ordinary tiled column.
 
 ## Configuration
 
-All optional; the defaults are what this machine wants.
-`$XDG_CONFIG_HOME/pickout/config.toml`, or the file `PICKOUT_CONFIG` names:
+All optional. `$XDG_CONFIG_HOME/pickout/config.toml`, or the file
+`PICKOUT_CONFIG` names:
 
 ```toml
 terminal = "kitty --app-id=pickout --"   # split on whitespace; must block
-open_dir = "suggested"                    # suggested | last | an absolute path
-save_dir = "last"                         # last overrides the application on
-                                          # purpose — see src/portal.rs
+open_dir = "suggested"                   # suggested | last | an absolute path
+save_dir = "last"                        # last overrides the application on
+                                         # purpose, see src/portal.rs
 
-[keys.global]                             # global | list | name | jump | path
+[keys.global]                            # global | list | name | jump | path
 "^E" = "commit"
 "M-p" = "jump"
 
@@ -150,16 +120,16 @@ save_dir = "last"                         # last overrides the application on
 "^P" = "up"
 ```
 
-The daemon is started by D-Bus, which does not inherit a shell's exports, so
-the file is the route that is always open to it. `PICKOUT_TERMINAL`,
-`PICKOUT_OPEN_DIR` and `PICKOUT_SAVE_DIR` still override it where the
-environment does reach — the tests use them — and `RUST_LOG=pickout=debug`
-watches requests arrive.
+D-Bus starts the daemon without a shell's exports, so the file is the one
+route always open to it. `PICKOUT_TERMINAL`, `PICKOUT_OPEN_DIR` and
+`PICKOUT_SAVE_DIR` override it where the environment does reach, and
+`RUST_LOG=pickout=debug` watches requests arrive.
 
-Keys are written the way the footer draws them, so a line copied off the screen
-is already a binding: `^S`, `M-h`, `Enter`, `Space`, `PageDown`; `ctrl-s` and
-`alt-h` say the same thing. A binding names what one key does and takes nothing
-else away, so the shipped key keeps working unless you bind over it.
+Keys are written the way the footer draws them, so a line copied off the
+screen is already a binding: `^S`, `M-h`, `Enter`, `Space`, `PageDown`.
+`ctrl-s` and `alt-h` say the same thing. A binding names what one key
+does and takes nothing else away, so a shipped key keeps working unless
+you bind over it.
 
 The actions, by the pane they mean something in:
 
@@ -171,20 +141,36 @@ The actions, by the pane they mean something in:
 | `jump` | `go` `close` `up` `down` `page-up` `page-down` |
 | `path` | `go` `close` |
 
-`dismiss` is `Esc`'s whole meaning in the list — clear the filter, and cancel
-only once there is none — rather than the first half of it. `^C` is not in the
-table: a way out that a config file can take away is not a way out. Neither are
-the readline keys inside a text field, which belong to the field.
+`dismiss` is the whole of what `Esc` means in the list, clearing the
+filter and cancelling only once there is none, rather than the first half
+of it. `^C` is not in the table, because a way out that a config file can
+take away is not a way out. Neither are the readline keys inside a text
+field, which belong to the field.
 
-Nothing in the file is fatal. A key that names nothing, an action that does not
-exist, an action bound where it could do nothing: each costs its own line and
-says so on the message line. A dialog that failed to start would reach the
-application as a cancel it could not tell from a real one.
+Nothing in the file is fatal. A key that names nothing, an action that
+does not exist, an action bound where it could do nothing: each costs its
+own line and says so on the message line. A dialog that failed to start
+would reach the application as a cancel it could not tell from a real one.
 
-The `pickout` app-id is matched by a `window-rule` in `~/.config/niri/config.kdl`,
-which floats the window. Changing one without the other fails silently — and a
-`terminal` setting that replaces the kitty invocation has to set the app-id
-itself, or the rule stops matching.
+## Development
+
+```sh
+cargo test         # wire protocol, URIs, directory policy, the model
+tests/dialog.sh    # the chooser, driven through a pty
+tests/portal.sh    # the D-Bus backend, on a private bus, no window
+```
+
+`tests/portal.sh` stubs the terminal out with `PICKOUT_TERMINAL`, which
+anything that takes a command and blocks until it exits will satisfy. Its
+last section uses the pty harness as that terminal, so the two halves are
+checked against each other rather than each against a stub of its own
+making. Both suites point `PICKOUT_CONFIG` at a file of their own, so the
+developer's settings are never silently part of the result.
+
+`tests/screen.py` runs a command under a pty, feeds keystrokes in paced
+chunks and prints the screen that was drawn. Two rules it learned the
+hard way: keys must arrive in chunks, because an application in raw mode
+eats a burst, and a real Return is CR (`\r`), never LF.
 
 ## License
 

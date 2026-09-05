@@ -1,0 +1,13 @@
+// Float the file dialog instead of opening it as a tiled column.
+//
+// The app-id comes from the `terminal` setting, whose default is
+// `kitty --app-id=pickout --`. A `terminal` setting that replaces the
+// kitty invocation has to set the app-id itself, or this stops matching,
+// and it fails silently: the dialog just opens as an ordinary column.
+
+window-rule {
+    match app-id="^pickout$"
+    open-floating true
+    default-column-width { fixed 800; }
+    default-window-height { fixed 500; }
+}
