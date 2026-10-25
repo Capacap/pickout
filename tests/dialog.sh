@@ -461,8 +461,28 @@ check "a trailing slash on a file is blocked by it" \
     "Name photo.png/ photo.png is a file" "$(row 38)"
 
 run folder '\x0e'
-check "^N opens a field that says what it is for" "new directory" "$(row 2)"
+check "^N opens a field that says what it is for, and where" \
+    "new directory in ~/Pictures" "$(row 2)"
 check "and offers its own keys" "Enter go Esc back" "$(footer)"
+
+run folder '\x0e\x00made/deep'
+check "and says what accepting it would make" \
+    "made/deep creates 2 directories in ~/Pictures" "$(row 2)"
+
+run folder '\x0e\x00~/made'
+check "a path that says where it goes is not given a place" \
+    "~/made creates 1 directory" "$(row 2)"
+
+COLS=40 run folder '\x0e\x00made/deep'
+check "in a narrow window the note gives way to what is typed" \
+    "made/deep creates 2 direc…" "$(row 2)"
+
+run folder '\x0e\x00ref'
+check "a directory already there is gone to" "ref exists, Enter goes in" "$(row 2)"
+
+run folder '\x0e\x00photo.png/x'
+check "and a file in the way is named before Enter" \
+    "photo.png/x photo.png is a file" "$(row 2)"
 
 run folder '\x0e\x00made/deep\x00\r\x00\x13'
 check "^N makes the whole path, goes in, and it can be chosen" \

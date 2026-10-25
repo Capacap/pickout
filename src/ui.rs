@@ -9,6 +9,9 @@
 //! slab depending on which one you are in. Chrome signals with prominence and
 //! nothing else, and no state here is worth spending a hue on.
 
+use std::ffi::OsStr;
+use std::path::Path;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -143,8 +146,6 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
         .or(app.path.as_ref())
         .or(app.mkdir.as_ref());
     if let Some(field) = editing {
-        // An empty field says nothing about what it is for, and `Ctrl-N` opens
-        // one empty.
         let note = if app.jump.is_some() {
             Some(if app.scanning() {
                 "scanning…".to_owned()
@@ -152,8 +153,13 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
                 format!("{} directories", app.dirs.len())
             })
         } else {
-            app.mkdir.as_ref().map(|_| "new directory".to_owned())
+            app.mkdir
+                .as_ref()
+                .map(|field| mkdir_note(app, field.text()))
         };
+        // Half the row at most: the note can name a directory wider than the
+        // row, and what is being typed matters more.
+        let note = note.map(|note| truncate(&note, width / 2));
         let note_width = note.as_ref().map_or(0, |note| columns(note) + 2);
         let (visible, cursor) = field.view(width.saturating_sub(note_width));
         frame.render_widget(
@@ -424,25 +430,57 @@ fn hint(app: &App) -> String {
         SaveTarget::Overwrite(_) if app.armed => "Enter again to replace".to_owned(),
         SaveTarget::Overwrite(_) => "exists".to_owned(),
         SaveTarget::IsDirectory(_) => "is a directory, Enter goes in".to_owned(),
-        SaveTarget::NewDirectory { parents, .. } if parents.is_empty() => {
-            "creates 1 directory, Enter goes in".to_owned()
-        }
         SaveTarget::NewDirectory { parents, .. } => {
-            format!("creates {} directories, Enter goes in", parents.len() + 1)
+            format!("{}, Enter goes in", creates(parents.len() + 1))
         }
-        SaveTarget::Blocked { obstacle, .. } => format!(
-            "{} is a file",
-            obstacle
-                .file_name()
-                .unwrap_or(obstacle.as_os_str())
-                .to_string_lossy()
-        ),
-        SaveTarget::New { parents, .. } if parents.len() == 1 => "creates 1 directory".to_owned(),
-        SaveTarget::New { parents, .. } if !parents.is_empty() => {
-            format!("creates {} directories", parents.len())
-        }
+        SaveTarget::Blocked { obstacle, .. } => is_a_file(obstacle),
+        SaveTarget::New { parents, .. } if !parents.is_empty() => creates(parents.len()),
         SaveTarget::New { .. } | SaveTarget::Empty => String::new(),
     }
+}
+
+/// What accepting the `Ctrl-N` field would do. A relative path lands under the
+/// directory being browsed, which the field has taken the place of on screen,
+/// so that is named until the path typed says where it goes by itself.
+fn mkdir_note(app: &App, typed: &str) -> String {
+    let here = abbreviate(&app.dir, &app.home);
+    if typed.is_empty() {
+        return format!("new directory in {here}");
+    }
+    let absolute = typed.starts_with('/') || typed == "~" || typed.starts_with("~/");
+    let as_dir = if typed.ends_with('/') {
+        typed.to_owned()
+    } else {
+        format!("{typed}/")
+    };
+    match model::save_target(&app.dir, &app.home, OsStr::new(&as_dir)) {
+        SaveTarget::IsDirectory(_) => "exists, Enter goes in".to_owned(),
+        SaveTarget::NewDirectory { parents, .. } if absolute => creates(parents.len() + 1),
+        SaveTarget::NewDirectory { parents, .. } => {
+            format!("{} in {here}", creates(parents.len() + 1))
+        }
+        SaveTarget::Blocked { obstacle, .. } => is_a_file(&obstacle),
+        // A name with a trailing slash is never a file to write.
+        SaveTarget::New { .. } | SaveTarget::Overwrite(_) | SaveTarget::Empty => String::new(),
+    }
+}
+
+fn creates(directories: usize) -> String {
+    if directories == 1 {
+        "creates 1 directory".to_owned()
+    } else {
+        format!("creates {directories} directories")
+    }
+}
+
+fn is_a_file(obstacle: &Path) -> String {
+    format!(
+        "{} is a file",
+        obstacle
+            .file_name()
+            .unwrap_or(obstacle.as_os_str())
+            .to_string_lossy()
+    )
 }
 
 /// What the footer offers, in the order it offers it. Which of these are shown
