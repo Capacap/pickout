@@ -25,10 +25,18 @@ pub enum Context {
     Name,
     Jump,
     Path,
+    Mkdir,
 }
 
 impl Context {
-    const ALL: [Self; 5] = [Self::Global, Self::List, Self::Name, Self::Jump, Self::Path];
+    const ALL: [Self; 6] = [
+        Self::Global,
+        Self::List,
+        Self::Name,
+        Self::Jump,
+        Self::Path,
+        Self::Mkdir,
+    ];
 
     fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|c| c.as_str() == name)
@@ -42,6 +50,7 @@ impl Context {
             Self::Name => "name",
             Self::Jump => "jump",
             Self::Path => "path",
+            Self::Mkdir => "mkdir",
         }
     }
 
@@ -53,6 +62,7 @@ impl Context {
             other => match other {
                 Self::Global => &[Self::Global],
                 Self::Jump => &[Self::Jump],
+                Self::Mkdir => &[Self::Mkdir],
                 _ => &[Self::Path],
             },
         }
@@ -65,7 +75,7 @@ impl Context {
         match self {
             Self::Global => matches!(
                 action,
-                Commit | Cancel | Jump | Filter | Path | Hidden | Pane
+                Commit | Cancel | Jump | Filter | Path | Mkdir | Hidden | Pane
             ),
             Self::List => matches!(
                 action,
@@ -86,15 +96,16 @@ impl Context {
                     | Jump
                     | Filter
                     | Path
+                    | Mkdir
                     | Hidden
                     | Pane
             ),
             Self::Name => matches!(
                 action,
-                Commit | Cancel | Jump | Filter | Path | Hidden | Pane
+                Commit | Cancel | Jump | Filter | Path | Mkdir | Hidden | Pane
             ),
             Self::Jump => matches!(action, Go | Close | Up | Down | PageUp | PageDown),
-            Self::Path => matches!(action, Go | Close),
+            Self::Path | Self::Mkdir => matches!(action, Go | Close),
         }
     }
 }
@@ -111,6 +122,8 @@ pub enum Action {
     Jump,
     Filter,
     Path,
+    /// Opens a field for a directory to create and step into.
+    Mkdir,
     Hidden,
     Pane,
     Activate,
@@ -125,7 +138,8 @@ pub enum Action {
     Dismiss,
     Erase,
     Clear,
-    /// Accepts an overlay: goes to the highlighted directory, or the typed path.
+    /// Accepts an overlay: goes to the highlighted directory, or the typed path,
+    /// creating it first under `Mkdir`.
     Go,
     /// Abandons an overlay, leaving the browser where it was.
     Close,
@@ -139,6 +153,7 @@ const NAMES: &[(&str, Action)] = &[
     ("jump", Action::Jump),
     ("filter", Action::Filter),
     ("path", Action::Path),
+    ("mkdir", Action::Mkdir),
     ("hidden", Action::Hidden),
     ("pane", Action::Pane),
     ("activate", Action::Activate),
@@ -304,6 +319,7 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (Context::Global, "^P", Action::Jump),
     (Context::Global, "^F", Action::Filter),
     (Context::Global, "^L", Action::Path),
+    (Context::Global, "^N", Action::Mkdir),
     (Context::Global, "M-h", Action::Hidden),
     (Context::Global, "Tab", Action::Pane),
     (Context::Global, "S-Tab", Action::Pane),
@@ -331,6 +347,8 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (Context::Jump, "PageDown", Action::PageDown),
     (Context::Path, "Enter", Action::Go),
     (Context::Path, "Esc", Action::Close),
+    (Context::Mkdir, "Enter", Action::Go),
+    (Context::Mkdir, "Esc", Action::Close),
 ];
 
 #[derive(Debug, Clone)]
@@ -338,7 +356,7 @@ pub struct Keymap {
     /// One layer per [`Context`], in `Context::ALL` order. Ordered rather than
     /// keyed: the first binding for an action is the one the footer shows, so
     /// which one comes first is part of the answer.
-    layers: [Vec<(Key, Action)>; 5],
+    layers: [Vec<(Key, Action)>; 6],
 }
 
 impl Default for Keymap {
@@ -373,12 +391,15 @@ impl Keymap {
         })
     }
 
-    /// The key to advertise for an action: the first one bound to it.
+    /// The key to advertise for an action: the first one bound to it that a
+    /// nearer layer has not taken for something else. `^N` bound to `down` in
+    /// the list still says `mkdir` in the global layer, and naming it would
+    /// promise what the key no longer does there.
     pub fn key(&self, context: Context, action: Action) -> Option<Key> {
         context.layers().iter().find_map(|layer| {
             self.layer(*layer)
                 .iter()
-                .find(|(_, bound)| *bound == action)
+                .find(|(key, bound)| *bound == action && self.action(context, *key) == Some(action))
                 .map(|(key, _)| *key)
         })
     }
@@ -526,6 +547,18 @@ mod tests {
         // The shipped key still works: binding a key says what that key does,
         // not what every other key stops doing.
         assert_eq!(map.action(Context::List, key("^S")), Some(Action::Commit));
+    }
+
+    #[test]
+    fn a_key_a_nearer_layer_took_is_not_advertised_for_what_it_did() {
+        let mut map = Keymap::default();
+        map.bind(Context::List, "^N", "down").unwrap();
+        assert_eq!(map.key(Context::List, Action::Mkdir), None);
+        // The pane that did not rebind it still reaches it.
+        assert_eq!(
+            map.key(Context::Name, Action::Mkdir).unwrap().to_string(),
+            "^N"
+        );
     }
 
     #[test]

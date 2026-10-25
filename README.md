@@ -31,9 +31,11 @@ the chooser inside it.
 | `Esc` | clears the filter, then cancels | cancels |
 
 `^S` and `M-Enter` commit from anywhere, `^P` opens the jump list, `^F`
-cycles the application's filters, `^L` makes the path bar editable,
-`M-h` toggles dotfiles, and `^W` / `^U` / `^K` / `^A` / `^E` edit as
-readline does.
+cycles the application's filters, `^L` makes the path bar editable, `^N`
+makes a directory (parents included) and goes into it, `M-h` toggles
+dotfiles, and `^W` / `^U` / `^K` / `^A` / `^E` edit as readline does.
+`^N` is offered wherever the answer is a place to save or a directory,
+and not when opening a file.
 
 `Enter` means two things, but never in one place. In the list it
 descends, in the Name field it commits. Meaning both at once is what
@@ -41,7 +43,10 @@ made the browser this replaces unusable for saving.
 
 The Name field says what committing would do before you commit, whether
 that is `exists`, `creates 2 directories` or `is a directory`.
-Overwriting takes two `Enter`s. `Space` marks a row in the modes that
+Overwriting takes two `Enter`s. A name that is a directory, or ends in
+`/`, is somewhere to go rather than something to save as: `Enter` makes
+whatever of it is missing, goes in, and leaves the field empty for the
+filename. `Space` marks a row in the modes that
 take more than one answer, and marks survive changing directory: once
 anything is marked, the marks are the whole answer.
 
@@ -116,13 +121,13 @@ open_dir = "suggested"                   # suggested | last | an absolute path
 save_dir = "last"                        # last overrides the application on
                                          # purpose, see src/portal.rs
 
-[keys.global]                            # global | list | name | jump | path
+[keys.global]                            # global | list | name | jump | path | mkdir
 "^E" = "commit"
 "M-p" = "jump"
 
 [keys.list]
-"^N" = "down"
-"^P" = "up"
+"M-j" = "down"
+"M-k" = "up"
 ```
 
 D-Bus starts the daemon without a shell's exports, so the file is the one
@@ -140,11 +145,11 @@ The actions, by the pane they mean something in:
 
 | Pane | Actions |
 | --- | --- |
-| `global` | `commit` `cancel` `jump` `filter` `path` `hidden` `pane` |
+| `global` | `commit` `cancel` `jump` `filter` `path` `mkdir` `hidden` `pane` |
 | `list` | the above, and `activate` `parent` `up` `down` `page-up` `page-down` `first` `last` `mark` `dismiss` `erase` `clear` |
 | `name` | the global set |
 | `jump` | `go` `close` `up` `down` `page-up` `page-down` |
-| `path` | `go` `close` |
+| `path`, `mkdir` | `go` `close` |
 
 `dismiss` is the whole of what `Esc` means in the list, clearing the
 filter and cancelling only once there is none, rather than the first half

@@ -197,6 +197,12 @@ pub enum SaveTarget {
     Empty,
     /// Names a directory, so there is no filename yet.
     IsDirectory(PathBuf),
+    /// Names a directory that does not exist yet, by ending in a slash.
+    /// `parents` are as in [`SaveTarget::New`]; `path` itself is created last.
+    NewDirectory {
+        path: PathBuf,
+        parents: Vec<PathBuf>,
+    },
     /// A path component that would have to be a directory is a file.
     Blocked { path: PathBuf, obstacle: PathBuf },
     /// Free. `parents` are the directories that do not exist yet, shallowest
@@ -215,18 +221,23 @@ pub fn save_target(base: &Path, home: &Path, name: &OsStr) -> SaveTarget {
     };
 
     // A trailing slash is the one case where intent is stated outright.
-    if name.as_bytes().ends_with(b"/") {
-        return SaveTarget::IsDirectory(path);
-    }
+    let directory = name.as_bytes().ends_with(b"/");
 
-    match std::fs::metadata(&path) {
+    let in_the_way = match std::fs::metadata(&path) {
         Ok(meta) if meta.is_dir() => return SaveTarget::IsDirectory(path),
-        Ok(_) => return SaveTarget::Overwrite(path),
+        Ok(_) => true,
         // A broken symlink stats as an error but is still something in the way.
-        Err(_) if std::fs::symlink_metadata(&path).is_ok() => {
-            return SaveTarget::Overwrite(path);
+        Err(_) => std::fs::symlink_metadata(&path).is_ok(),
+    };
+    match (in_the_way, directory) {
+        (true, true) => {
+            return SaveTarget::Blocked {
+                obstacle: path.clone(),
+                path,
+            };
         }
-        Err(_) => {}
+        (true, false) => return SaveTarget::Overwrite(path),
+        (false, _) => {}
     }
 
     let mut parents = Vec::new();
@@ -250,7 +261,11 @@ pub fn save_target(base: &Path, home: &Path, name: &OsStr) -> SaveTarget {
         Some(obstacle) => SaveTarget::Blocked { path, obstacle },
         None => {
             parents.reverse();
-            SaveTarget::New { path, parents }
+            if directory {
+                SaveTarget::NewDirectory { path, parents }
+            } else {
+                SaveTarget::New { path, parents }
+            }
         }
     }
 }
@@ -798,7 +813,32 @@ mod tests {
         let got = save_target(dir.path(), dir.path(), os("nothing/here/"));
         assert_eq!(
             got,
-            SaveTarget::IsDirectory(dir.path().join("nothing/here"))
+            SaveTarget::NewDirectory {
+                path: dir.path().join("nothing/here"),
+                parents: vec![dir.path().join("nothing")],
+            }
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_on_an_existing_directory_is_that_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let got = save_target(dir.path(), dir.path(), os("sub/"));
+        assert_eq!(got, SaveTarget::IsDirectory(dir.path().join("sub")));
+    }
+
+    #[test]
+    fn a_trailing_slash_on_a_file_is_blocked_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let got = save_target(dir.path(), dir.path(), os("a.txt/"));
+        assert_eq!(
+            got,
+            SaveTarget::Blocked {
+                path: dir.path().join("a.txt"),
+                obstacle: dir.path().join("a.txt"),
+            }
         );
     }
 

@@ -101,6 +101,8 @@ pub struct App {
     pub jump: Option<Jump>,
     /// Some when the path bar is being edited, under `Ctrl-L`.
     pub path: Option<Field>,
+    /// Some while a directory to create is being named, under `Ctrl-N`.
+    pub mkdir: Option<Field>,
     pub focus: Focus,
     pub show_hidden: bool,
     /// Set by the first `Enter` on a name that already exists; the second one
@@ -145,6 +147,7 @@ impl App {
             dirs: Vec::new(),
             jump: None,
             path: None,
+            mkdir: None,
             show_hidden: false,
             armed: false,
             target: SaveTarget::Empty,
@@ -593,16 +596,52 @@ impl App {
                 // application then declines to write.
                 for parent in &parents {
                     if let Err(err) = std::fs::create_dir(parent) {
-                        self.message = Some(format!("{}: {err}", parent.display()));
-                        return;
+                        return self.failed_to_make(parent, &err);
                     }
                 }
                 self.answer(vec![path]);
             }
+            // A directory is somewhere to save, not something to save as, so
+            // committing one goes into it and leaves the name to be typed there.
+            SaveTarget::IsDirectory(path) => self.enter_from_name(path),
+            SaveTarget::NewDirectory { path, parents } => {
+                for dir in parents.iter().chain([&path]) {
+                    if let Err(err) = std::fs::create_dir(dir) {
+                        return self.failed_to_make(dir, &err);
+                    }
+                }
+                self.enter_from_name(path);
+            }
             // The hint under the field already says why these cannot be
             // committed, so refusing silently is not a silent refusal.
-            SaveTarget::Empty | SaveTarget::IsDirectory(_) | SaveTarget::Blocked { .. } => {}
+            SaveTarget::Empty | SaveTarget::Blocked { .. } => {}
         }
+    }
+
+    /// The directories made before `dir` failed are still there, so what
+    /// committing would do has changed, and the hint has to say so.
+    fn failed_to_make(&mut self, dir: &Path, err: &std::io::Error) {
+        self.refresh_target();
+        self.message = Some(format!("{}: {err}", abbreviate(dir, &self.home)));
+    }
+
+    fn enter_from_name(&mut self, dir: PathBuf) {
+        self.name.set(String::new());
+        self.go_to(dir, None);
+    }
+
+    /// The `Ctrl-N` field, accepted. Missing parents are made along the way, and
+    /// a directory that is already there is simply gone to: the user asked to
+    /// end up in it, and it is not in the way of anything.
+    fn make_dir(&mut self, typed: &str) {
+        let Some(path) = model::resolve(&self.dir, &self.home, OsStr::new(typed)) else {
+            return;
+        };
+        if let Err(err) = std::fs::create_dir_all(&path) {
+            self.message = Some(format!("{}: {err}", abbreviate(&path, &self.home)));
+            return;
+        }
+        self.go_to(path, None);
     }
 
     fn commit_directory(&mut self) {
@@ -647,6 +686,8 @@ impl App {
             keys::Context::Jump
         } else if self.path.is_some() {
             keys::Context::Path
+        } else if self.mkdir.is_some() {
+            keys::Context::Mkdir
         } else {
             match self.focus {
                 Focus::List => keys::Context::List,
@@ -701,6 +742,11 @@ impl App {
                     field.handle(event);
                 }
             }
+            keys::Context::Mkdir => {
+                if let Some(field) = &mut self.mkdir {
+                    field.handle(event);
+                }
+            }
             keys::Context::Global => {}
         }
     }
@@ -716,6 +762,8 @@ impl App {
             Action::Pane => self.saving(),
             Action::Mark => self.multiple(),
             Action::Filter => !self.request.filters.is_empty(),
+            // Opening a file is answered by something already there.
+            Action::Mkdir => self.saving() || self.picking_dir(),
             _ => true,
         }
     }
@@ -755,6 +803,7 @@ impl App {
             Action::Pane => "pane".to_owned(),
             Action::Jump => "jump".to_owned(),
             Action::Path => "path".to_owned(),
+            Action::Mkdir => "mkdir".to_owned(),
             Action::Hidden => "hidden".to_owned(),
             Action::Mark => "mark".to_owned(),
             Action::Go => "go".to_owned(),
@@ -777,6 +826,7 @@ impl App {
             Action::Jump => self.open_jump(),
             Action::Filter => self.cycle_filter(),
             Action::Path => self.path = Some(Field::new(abbreviate(&self.dir, &self.home))),
+            Action::Mkdir => self.mkdir = Some(Field::default()),
             Action::Hidden => {
                 self.show_hidden = !self.show_hidden;
                 self.refilter();
@@ -817,6 +867,7 @@ impl App {
             Action::Close => {
                 self.jump = None;
                 self.path = None;
+                self.mkdir = None;
             }
             Action::Go => self.go(context),
         }
@@ -847,6 +898,12 @@ impl App {
                     return;
                 };
                 self.go_to_typed(field.text());
+            }
+            keys::Context::Mkdir => {
+                let Some(field) = self.mkdir.take() else {
+                    return;
+                };
+                self.make_dir(field.text());
             }
             _ => {}
         }

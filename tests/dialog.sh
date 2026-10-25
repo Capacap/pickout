@@ -223,14 +223,14 @@ check "the title is the application's" "┌─ Save board ─" "${out:0:15}"
 # The footer is built from the same table the keys are dispatched from, so a
 # key named here is a key that works, and one that works in this mode is named.
 check "the footer names the keys this pane actually has" \
-    "Tab pane Enter save ^P jump ^L path M-h hidden Esc cancel" \
+    "Tab pane Enter save ^P jump ^L path ^N mkdir M-h hidden Esc cancel" \
     "$(footer)"
 
 # The same request, one Tab away: `Enter` no longer commits, so the key that
 # does is named instead. Nothing about the footer is written down twice.
 run save '\t'
 check "and names a different set in the other pane" \
-    "Tab pane ^S save Enter open/save ^P jump ^L path M-h hidden Esc cancel" \
+    "Tab pane ^S save Enter open/save ^P jump ^L path ^N mkdir M-h hidden Esc cancel" \
     "$(footer)"
 check "the path bar abbreviates \$HOME" "~/Pictures" "$(row 2)"
 check "the cursor starts below .." "> ref/" "$(row 5)"
@@ -287,7 +287,7 @@ check "a name carrying directories says what it would make" \
     "Name deep/er/a.txt creates 2 directories" "$(row 38)"
 
 run save '\x15ref'
-check "a directory is not a filename" "Name ref is a directory" "$(row 38)"
+check "a directory is not a filename" "Name ref is a directory, Enter goes in" "$(row 38)"
 
 run save '\x15bern_copy.corkboard/x'
 check "a file standing in for a directory blocks the save" \
@@ -367,7 +367,7 @@ run many '\x13'
 check "SaveFiles answers with the application's names" \
     "~/Pictures/ref/one.txt ~/Pictures/ref/two.txt" "$(paths)"
 check "the accept label loses its mnemonic and joins the other hints" \
-    "^S export here Enter open ^P jump ^L path M-h hidden Esc cancel" \
+    "^S export here Enter open ^P jump ^L path ^N mkdir M-h hidden Esc cancel" \
     "$(footer)"
 
 run many '\x1b[B'
@@ -434,6 +434,57 @@ check "and directories can be, when they are" \
     "~/Pictures/Screenshots ~/Pictures/ref" "$(paths)"
 
 echo
+echo "making directories"
+
+# Each case removes what it made: the jump list counts every directory under
+# home, and the cases after this one count on the tree as it was built.
+run save '\x15shots/'
+check "one directory is counted as one" \
+    "Name shots/ creates 1 directory, Enter goes in" "$(row 38)"
+
+run save '\x15shots/new/'
+check "a trailing slash names directories to make" \
+    "Name shots/new/ creates 2 directories, Enter goes in" "$(row 38)"
+
+run save '\x15shots/new/\x00\r'
+check "and Enter makes them and goes in" "~/Pictures/shots/new" "$(row 2)"
+check "leaving the name to be typed there" "Name" "$(row 38)"
+check "without answering" "<no response>" "$(paths)"
+rm -rf "$tmp/Pictures/shots"
+
+run save '\x15ref\x00\r'
+check "Enter on an existing directory goes into it" "~/Pictures/ref" "$(row 2)"
+check "and empties the name there too" "Name" "$(row 38)"
+
+run save '\x15photo.png/'
+check "a trailing slash on a file is blocked by it" \
+    "Name photo.png/ photo.png is a file" "$(row 38)"
+
+run folder '\x0e'
+check "^N opens a field that says what it is for" "new directory" "$(row 2)"
+check "and offers its own keys" "Enter go Esc back" "$(footer)"
+
+run folder '\x0e\x00made/deep\x00\r\x00\x13'
+check "^N makes the whole path, goes in, and it can be chosen" \
+    "~/Pictures/made/deep" "$(paths)"
+rm -rf "$tmp/Pictures/made"
+
+run folder '\x0e\x00ref\x00\r'
+check "^N on a directory already there just goes to it" "~/Pictures/ref" "$(row 2)"
+
+run folder '\x0e\x00photo.png\x00\r'
+check "^N on a file says why it could not" \
+    "~/Pictures ~/Pictures/photo.png: File exists (os error 17)" "$(row 2)"
+
+run folder '\x0e\x00gone\x00\x1b'
+check "Esc closes the field" "~/Pictures" "$(row 2)"
+check "and makes nothing" "absent" \
+    "$([[ -e $tmp/Pictures/gone ]] && echo present || echo absent)"
+
+run open '\x0e\x00x'
+check "opening a file offers no ^N, so it filters instead" "~/Pictures /x" "$(row 2)"
+
+echo
 echo "the jump list"
 
 run save '\x10'
@@ -473,6 +524,8 @@ run save '\t'
 check "the footer advertises the key that was bound, not the one shipped" \
     "Tab pane ^E save Enter open/save ^P jump ^L path M-h hidden Esc cancel" \
     "$(footer)"
+check "and drops a shipped key the pane has taken for something else" "" \
+    "$(footer | grep -o mkdir)"
 
 # A line it cannot use must cost that line and nothing else.
 cat > "$PICKOUT_CONFIG" <<'TOML'

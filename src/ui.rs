@@ -133,22 +133,27 @@ fn draw_path(frame: &mut Frame, app: &App, area: Rect) {
     let left = area.x + PAD_LEFT;
     let width = area.width.saturating_sub(PAD_LEFT + PAD_RIGHT) as usize;
 
-    // The jump list and `Ctrl-L` both borrow this row for a field. Whatever is
-    // narrowing the listing belongs directly above it, and there is only ever
-    // one such thing at a time.
+    // The jump list, `Ctrl-L` and `Ctrl-N` borrow this row for a field.
+    // Whatever is narrowing the listing belongs directly above it, and there is
+    // only ever one such thing at a time.
     let editing = app
         .jump
         .as_ref()
         .map(|jump| &jump.field)
-        .or(app.path.as_ref());
+        .or(app.path.as_ref())
+        .or(app.mkdir.as_ref());
     if let Some(field) = editing {
-        let note = app.jump.as_ref().map(|_| {
-            if app.scanning() {
+        // An empty field says nothing about what it is for, and `Ctrl-N` opens
+        // one empty.
+        let note = if app.jump.is_some() {
+            Some(if app.scanning() {
                 "scanning…".to_owned()
             } else {
                 format!("{} directories", app.dirs.len())
-            }
-        });
+            })
+        } else {
+            app.mkdir.as_ref().map(|_| "new directory".to_owned())
+        };
         let note_width = note.as_ref().map_or(0, |note| columns(note) + 2);
         let (visible, cursor) = field.view(width.saturating_sub(note_width));
         frame.render_widget(
@@ -254,7 +259,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     // typed into. Two things claiming the eye at once is what a Name field
     // alongside a browser risks, and prominence is the only signal in play. The
     // pointer stays either way: it is what says which row Enter would answer.
-    let focused = app.focus == Focus::List && app.path.is_none();
+    let focused = app.focus == Focus::List && app.path.is_none() && app.mkdir.is_none();
     let list = List::new(items)
         .block(Block::new().padding(Padding::new(PAD_LEFT, PAD_RIGHT, 0, 0)))
         .highlight_symbol("> ")
@@ -408,7 +413,7 @@ fn draw_name(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
-    if app.focus == Focus::Name && app.path.is_none() {
+    if app.focus == Focus::Name && app.path.is_none() && app.mkdir.is_none() {
         frame.set_cursor_position((value_x + cursor as u16, area.y));
     }
 }
@@ -418,7 +423,13 @@ fn hint(app: &App) -> String {
     match &app.target {
         SaveTarget::Overwrite(_) if app.armed => "Enter again to replace".to_owned(),
         SaveTarget::Overwrite(_) => "exists".to_owned(),
-        SaveTarget::IsDirectory(_) => "is a directory".to_owned(),
+        SaveTarget::IsDirectory(_) => "is a directory, Enter goes in".to_owned(),
+        SaveTarget::NewDirectory { parents, .. } if parents.is_empty() => {
+            "creates 1 directory, Enter goes in".to_owned()
+        }
+        SaveTarget::NewDirectory { parents, .. } => {
+            format!("creates {} directories, Enter goes in", parents.len() + 1)
+        }
         SaveTarget::Blocked { obstacle, .. } => format!(
             "{} is a file",
             obstacle
@@ -447,6 +458,7 @@ const OFFERED: &[Action] = &[
     Action::Filter,
     Action::Jump,
     Action::Path,
+    Action::Mkdir,
     Action::Hidden,
     Action::Dismiss,
     Action::Cancel,
