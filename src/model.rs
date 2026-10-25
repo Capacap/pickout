@@ -190,6 +190,17 @@ fn fold(path: &Path) -> PathBuf {
     out
 }
 
+/// Removes directories a dialog made, given in the order it made them. Deepest
+/// first, so that a parent left empty by its child goes too. `remove_dir`
+/// refuses a directory with anything in it, which is the whole of the check:
+/// what the user or another program put there stays, and so does the
+/// directory holding it.
+pub fn take_back(made: &[PathBuf]) {
+    for dir in made.iter().rev() {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
 /// What would happen if the name currently in the field were committed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveTarget {
@@ -247,6 +258,11 @@ pub fn save_target(base: &Path, home: &Path, name: &OsStr) -> SaveTarget {
         match std::fs::metadata(dir) {
             Ok(meta) if meta.is_dir() => break,
             Ok(_) => {
+                obstacle = Some(dir.to_path_buf());
+                break;
+            }
+            // A dangling symlink, as above: not a directory, and in the way.
+            Err(_) if std::fs::symlink_metadata(dir).is_ok() => {
                 obstacle = Some(dir.to_path_buf());
                 break;
             }
@@ -748,6 +764,22 @@ mod tests {
     // -- save targets
 
     #[test]
+    fn taking_back_removes_only_what_is_still_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let made: Vec<PathBuf> = ["a", "a/b", "c", "c/d"]
+            .iter()
+            .map(|p| dir.path().join(p))
+            .collect();
+        for path in &made {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(dir.path().join("c/d/kept.txt"), b"x").unwrap();
+        take_back(&made);
+        assert!(!dir.path().join("a").exists());
+        assert!(dir.path().join("c/d/kept.txt").exists());
+    }
+
+    #[test]
     fn an_empty_name_is_not_a_target() {
         let dir = tempfile::tempdir().unwrap();
         let got = save_target(dir.path(), dir.path(), os(""));
@@ -826,6 +858,20 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let got = save_target(dir.path(), dir.path(), os("sub/"));
         assert_eq!(got, SaveTarget::IsDirectory(dir.path().join("sub")));
+    }
+
+    #[test]
+    fn a_dangling_symlink_partway_down_blocks_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("broken")).unwrap();
+        let got = save_target(dir.path(), dir.path(), os("broken/x/"));
+        assert_eq!(
+            got,
+            SaveTarget::Blocked {
+                path: dir.path().join("broken/x"),
+                obstacle: dir.path().join("broken"),
+            }
+        );
     }
 
     #[test]

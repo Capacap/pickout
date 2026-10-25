@@ -9,7 +9,6 @@
 //! slab depending on which one you are in. Chrome signals with prominence and
 //! nothing else, and no state here is worth spending a hue on.
 
-use std::ffi::OsStr;
 use std::path::Path;
 
 use ratatui::Frame;
@@ -439,29 +438,27 @@ fn hint(app: &App) -> String {
     }
 }
 
-/// What accepting the `Ctrl-N` field would do. A relative path lands under the
-/// directory being browsed, which the field has taken the place of on screen,
-/// so that is named until the path typed says where it goes by itself.
+/// What accepting the `Ctrl-N` field would do. A relative path lands under a
+/// directory the field has taken the place of on screen, so the note names the
+/// one the first new directory goes into, unless the path typed already does.
 fn mkdir_note(app: &App, typed: &str) -> String {
-    let here = abbreviate(&app.dir, &app.home);
-    if typed.is_empty() {
-        return format!("new directory in {here}");
-    }
     let absolute = typed.starts_with('/') || typed == "~" || typed.starts_with("~/");
-    let as_dir = if typed.ends_with('/') {
-        typed.to_owned()
-    } else {
-        format!("{typed}/")
-    };
-    match model::save_target(&app.dir, &app.home, OsStr::new(&as_dir)) {
+    match app.mkdir_target(typed) {
+        SaveTarget::Empty => format!("new directory in {}", abbreviate(&app.dir, &app.home)),
         SaveTarget::IsDirectory(_) => "exists, Enter goes in".to_owned(),
         SaveTarget::NewDirectory { parents, .. } if absolute => creates(parents.len() + 1),
-        SaveTarget::NewDirectory { parents, .. } => {
-            format!("{} in {here}", creates(parents.len() + 1))
+        SaveTarget::NewDirectory { parents, path } => {
+            let first = parents.first().unwrap_or(&path);
+            let under = first.parent().unwrap_or(first);
+            format!(
+                "{} in {}",
+                creates(parents.len() + 1),
+                abbreviate(under, &app.home)
+            )
         }
         SaveTarget::Blocked { obstacle, .. } => is_a_file(&obstacle),
-        // A name with a trailing slash is never a file to write.
-        SaveTarget::New { .. } | SaveTarget::Overwrite(_) | SaveTarget::Empty => String::new(),
+        // Read as a directory, a path is never a file to write.
+        SaveTarget::New { .. } | SaveTarget::Overwrite(_) => String::new(),
     }
 }
 
@@ -503,21 +500,53 @@ const OFFERED: &[Action] = &[
     Action::Close,
 ];
 
+/// What a footer too narrow for all of them gives up first. A key cut off in
+/// the middle of its name tells nobody anything, so whole entries go, starting
+/// with the ones a user reaches for least. The rest are never given up: the
+/// answer and the way out are what the footer is for.
+const SHED: &[Action] = &[
+    Action::Hidden,
+    Action::Path,
+    Action::Pane,
+    Action::Jump,
+    Action::Filter,
+    Action::Mkdir,
+    Action::Mark,
+];
+
+/// Space before the first entry, and between entries.
+const GAP: usize = 3;
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let context = app.context();
-    let keys = OFFERED.iter().filter_map(|action| {
-        let key = app.keys.key(context, *action)?;
-        if !app.advertises(context, *action) {
-            return None;
-        }
-        let label = app.label(context, *action);
-        (!label.is_empty()).then(|| (key.to_string(), label))
-    });
+    let mut keys: Vec<(Action, String, String)> = OFFERED
+        .iter()
+        .filter_map(|action| {
+            let key = app.keys.key(context, *action)?;
+            if !app.advertises(context, *action) {
+                return None;
+            }
+            let label = app.label(context, *action);
+            (!label.is_empty()).then(|| (*action, key.to_string(), label))
+        })
+        .collect();
 
-    let mut spans = vec![Span::raw("   ")];
-    for (key, what) in keys {
+    let width = |keys: &[(Action, String, String)]| -> usize {
+        keys.iter()
+            .map(|(_, key, what)| GAP + columns(key) + 1 + columns(what))
+            .sum()
+    };
+    for shed in SHED {
+        if width(&keys) <= area.width as usize {
+            break;
+        }
+        keys.retain(|(action, ..)| action != shed);
+    }
+
+    let mut spans = vec![Span::raw(" ".repeat(GAP))];
+    for (_, key, what) in keys {
         spans.push(Span::styled(key, TEXT));
-        spans.push(Span::styled(format!(" {what}   "), DIM));
+        spans.push(Span::styled(format!(" {what}{}", " ".repeat(GAP)), DIM));
     }
     frame.render_widget(Line::from(spans), area);
 }

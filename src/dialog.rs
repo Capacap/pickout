@@ -8,13 +8,16 @@
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::crossterm::{execute, terminal::SetTitle};
 use ratatui::widgets::ListState;
+
+use signal_hook::consts::{SIGHUP, SIGTERM};
+use signal_hook::iterator::Signals;
 
 use crate::config::{self, Config};
 use crate::field::Field;
@@ -36,13 +39,39 @@ pub fn run(request_path: &Path, response_path: &Path) -> Result<()> {
     let request: Request = serde_json::from_slice(&raw).context("parsing the request")?;
 
     let mut app = App::new(request, &Config::load())?;
-    let response = ratatui::run(|terminal| app.event_loop(terminal))?;
+    // Closing the terminal window hangs the dialog up, and so does the daemon
+    // when the application withdraws the request. Both are a cancel, and a
+    // cancel has directories to take back, which dying of the signal skips.
+    // Taken here rather than by the event loop, because the loop never hears
+    // of it: a hung-up terminal reads as ready and empty forever, and
+    // crossterm's poll spins on that past its own timeout.
+    let mut signals = Signals::new([SIGHUP, SIGTERM]).context("listening for a hangup")?;
+    let made = Arc::clone(&app.made);
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            model::take_back(&made.lock().unwrap_or_else(PoisonError::into_inner));
+            // No response file is a cancel to the daemon.
+            std::process::exit(1);
+        }
+    });
+    let response = ratatui::run(|terminal| app.event_loop(terminal));
+    // Held until the outcome is on disk, so a hangup either comes first and is
+    // a cancel with everything taken back, or comes after and finds nothing
+    // left to take. An answer keeps what was made: a file is about to be
+    // written into one of them.
+    let mut made = app.made.lock().unwrap_or_else(PoisonError::into_inner);
+    if !matches!(response, Ok(Response::Selected { .. })) {
+        model::take_back(&made);
+    }
+    let response = response?;
 
     // The daemon reads an empty or absent file as a cancel, so a crash before
     // this point declines the dialog rather than hanging the application.
     let encoded = serde_json::to_vec(&response).context("encoding the response")?;
     std::fs::write(response_path, encoded)
-        .with_context(|| format!("writing {}", response_path.display()))
+        .with_context(|| format!("writing {}", response_path.display()))?;
+    made.clear();
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +140,9 @@ pub struct App {
     pub target: SaveTarget,
     pub message: Option<String>,
     pub keys: Keymap,
+    /// Directories this dialog made, in the order it made them. A dialog that
+    /// ends without an answer takes back the ones nothing went into.
+    made: Arc<Mutex<Vec<PathBuf>>>,
     fuzzy: Fuzzy,
     scan: Option<mpsc::Receiver<Vec<PathBuf>>>,
     done: Option<Response>,
@@ -153,6 +185,7 @@ impl App {
             target: SaveTarget::Empty,
             message: None,
             keys,
+            made: Arc::default(),
             fuzzy: Fuzzy::default(),
             scan: None,
             done: None,
@@ -490,6 +523,15 @@ impl App {
             Ok(dirs) => {
                 self.dirs = dirs;
                 self.scan = None;
+                // The walk may have passed a directory before it was made.
+                let made = self
+                    .made
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                for dir in made {
+                    self.remember(dir);
+                }
                 self.rejump();
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -594,23 +636,18 @@ impl App {
                 // answers where to write and the application does the writing.
                 // Creating it here leaves an empty stub behind every time the
                 // application then declines to write.
-                for parent in &parents {
-                    if let Err(err) = std::fs::create_dir(parent) {
-                        return self.failed_to_make(parent, &err);
-                    }
+                if self.make_dirs(&parents) {
+                    self.answer(vec![path]);
                 }
-                self.answer(vec![path]);
             }
             // A directory is somewhere to save, not something to save as, so
             // committing one goes into it and leaves the name to be typed there.
             SaveTarget::IsDirectory(path) => self.enter_from_name(path),
-            SaveTarget::NewDirectory { path, parents } => {
-                for dir in parents.iter().chain([&path]) {
-                    if let Err(err) = std::fs::create_dir(dir) {
-                        return self.failed_to_make(dir, &err);
-                    }
+            SaveTarget::NewDirectory { mut parents, path } => {
+                parents.push(path.clone());
+                if self.make_dirs(&parents) {
+                    self.enter_from_name(path);
                 }
-                self.enter_from_name(path);
             }
             // The hint under the field already says why these cannot be
             // committed, so refusing silently is not a silent refusal.
@@ -618,11 +655,33 @@ impl App {
         }
     }
 
-    /// The directories made before `dir` failed are still there, so what
-    /// committing would do has changed, and the hint has to say so.
-    fn failed_to_make(&mut self, dir: &Path, err: &std::io::Error) {
-        self.refresh_target();
-        self.message = Some(format!("{}: {err}", abbreviate(dir, &self.home)));
+    /// Makes `dirs` in order, shallowest first, and says whether all of them
+    /// were made.
+    fn make_dirs(&mut self, dirs: &[PathBuf]) -> bool {
+        for dir in dirs {
+            if let Err(err) = std::fs::create_dir(dir) {
+                // The ones made before this one are still there, so what
+                // committing would do has changed, and the hint has to say so.
+                self.refresh_target();
+                self.message = Some(format!("{}: {err}", abbreviate(dir, &self.home)));
+                return false;
+            }
+            self.made
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(dir.clone());
+            self.remember(dir.clone());
+        }
+        true
+    }
+
+    /// Puts a directory just made into the jump list. Only once the walk has
+    /// filled it: an empty list is what tells `Ctrl-P` to walk, and a walk
+    /// started later finds the directory by itself.
+    fn remember(&mut self, dir: PathBuf) {
+        if !self.dirs.is_empty() && dir.starts_with(&self.home) && !self.dirs.contains(&dir) {
+            self.dirs.push(dir);
+        }
     }
 
     fn enter_from_name(&mut self, dir: PathBuf) {
@@ -630,18 +689,44 @@ impl App {
         self.go_to(dir, None);
     }
 
-    /// The `Ctrl-N` field, accepted. Missing parents are made along the way, and
-    /// a directory that is already there is simply gone to: the user asked to
-    /// end up in it, and it is not in the way of anything.
-    fn make_dir(&mut self, typed: &str) {
-        let Some(path) = model::resolve(&self.dir, &self.home, OsStr::new(typed)) else {
-            return;
-        };
-        if let Err(err) = std::fs::create_dir_all(&path) {
-            self.message = Some(format!("{}: {err}", abbreviate(&path, &self.home)));
-            return;
+    /// What accepting the `Ctrl-N` field would do. What is typed names a
+    /// directory whether or not it ends in a slash, since a directory is all
+    /// the field makes. Nothing but spaces is nothing typed: a directory
+    /// called that would show in the listing as no name at all.
+    pub fn mkdir_target(&self, typed: &str) -> SaveTarget {
+        if typed.trim().is_empty() {
+            return SaveTarget::Empty;
         }
-        self.go_to(path, None);
+        if typed.ends_with('/') {
+            return model::save_target(&self.dir, &self.home, OsStr::new(typed));
+        }
+        model::save_target(&self.dir, &self.home, OsStr::new(&format!("{typed}/")))
+    }
+
+    /// The `Ctrl-N` field, accepted. A directory that is already there is
+    /// simply gone to: the user asked to end up in it, and it is not in the
+    /// way of anything.
+    fn accept_mkdir(&mut self) {
+        let typed = self.mkdir.as_ref().map(|field| field.text().to_owned());
+        match self.mkdir_target(typed.as_deref().unwrap_or_default()) {
+            // The note beside the field already says what is in the way, and
+            // the field stays open for the path to be corrected.
+            SaveTarget::Blocked { .. } => {}
+            SaveTarget::IsDirectory(path) => {
+                self.mkdir = None;
+                self.go_to(path, None);
+            }
+            SaveTarget::NewDirectory { mut parents, path } => {
+                self.mkdir = None;
+                parents.push(path.clone());
+                if self.make_dirs(&parents) {
+                    self.go_to(path, None);
+                }
+            }
+            SaveTarget::Empty | SaveTarget::New { .. } | SaveTarget::Overwrite(_) => {
+                self.mkdir = None;
+            }
+        }
     }
 
     fn commit_directory(&mut self) {
@@ -899,12 +984,7 @@ impl App {
                 };
                 self.go_to_typed(field.text());
             }
-            keys::Context::Mkdir => {
-                let Some(field) = self.mkdir.take() else {
-                    return;
-                };
-                self.make_dir(field.text());
-            }
+            keys::Context::Mkdir => self.accept_mkdir(),
             _ => {}
         }
     }

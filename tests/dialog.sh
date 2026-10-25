@@ -228,6 +228,14 @@ check "the footer names the keys this pane actually has" \
 
 # The same request, one Tab away: `Enter` no longer commits, so the key that
 # does is named instead. Nothing about the footer is written down twice.
+COLS=80 run save ''
+check "a narrow footer gives up whole entries, least used first" \
+    "Tab pane Enter save ^P jump ^L path ^N mkdir Esc cancel" "$(footer)"
+
+COLS=50 run save ''
+check "and keeps giving them up in that order" \
+    "Enter save ^P jump ^N mkdir Esc cancel" "$(footer)"
+
 run save '\t'
 check "and names a different set in the other pane" \
     "Tab pane ^S save Enter open/save ^P jump ^L path ^N mkdir M-h hidden Esc cancel" \
@@ -436,7 +444,9 @@ check "and directories can be, when they are" \
 echo
 echo "making directories"
 
-# Each case removes what it made: the jump list counts every directory under
+# A dialog that ends without an answer takes back what it made, and the
+# harness ends every case by closing the terminal. Where a case answers, it
+# removes what it made itself: the jump list counts every directory under
 # home, and the cases after this one count on the tree as it was built.
 run save '\x15shots/'
 check "one directory is counted as one" \
@@ -450,6 +460,16 @@ run save '\x15shots/new/\x00\r'
 check "and Enter makes them and goes in" "~/Pictures/shots/new" "$(row 2)"
 check "leaving the name to be typed there" "Name" "$(row 38)"
 check "without answering" "<no response>" "$(paths)"
+check "and closing the window takes them back" "absent" \
+    "$([[ -e $tmp/Pictures/shots ]] && echo present || echo absent)"
+
+run save '\x15shots/\x00\r\x00\x1b'
+check "so does cancelling" "cancelled absent" \
+    "$(paths) $([[ -e $tmp/Pictures/shots ]] && echo present || echo absent)"
+
+run save '\x15shots/\x00\r\x00a.txt\x00\r'
+check "an answer keeps them, with nothing in them yet" \
+    "~/Pictures/shots/a.txt present" "$(paths) $([[ -e $tmp/Pictures/shots ]] && echo present || echo absent)"
 rm -rf "$tmp/Pictures/shots"
 
 run save '\x15ref\x00\r'
@@ -468,6 +488,13 @@ check "and offers its own keys" "Enter go Esc back" "$(footer)"
 run folder '\x0e\x00made/deep'
 check "and says what accepting it would make" \
     "made/deep creates 2 directories in ~/Pictures" "$(row 2)"
+
+run folder '\x0e\x00../made'
+check "a path that climbs is told where it lands" \
+    "../made creates 1 directory in ~" "$(row 2)"
+
+run folder '\x0e\x00 \x00 \x00\r'
+check "nothing but spaces makes nothing" "~/Pictures" "$(row 2)"
 
 run folder '\x0e\x00~/made'
 check "a path that says where it goes is not given a place" \
@@ -493,8 +520,22 @@ run folder '\x0e\x00ref\x00\r'
 check "^N on a directory already there just goes to it" "~/Pictures/ref" "$(row 2)"
 
 run folder '\x0e\x00photo.png\x00\r'
-check "^N on a file says why it could not" \
-    "~/Pictures ~/Pictures/photo.png: File exists (os error 17)" "$(row 2)"
+check "^N on a file stays open, saying what is in the way" \
+    "photo.png photo.png is a file" "$(row 2)"
+
+run folder '\x0e\x00/nope/x\x00\r'
+check "and a place it cannot write says why" \
+    "~/Pictures /nope: Permission denied (os error 13)" "$(row 2)"
+
+run folder '\x10\x00\x1b\x00\x0e\x00fresh\x00\r\x00\x10'
+check "a directory made after the walk joins the jump list" \
+    "5 directories" "$(row 2)"
+check "and leaves again with the dialog" "absent" \
+    "$([[ -e $tmp/Pictures/fresh ]] && echo present || echo absent)"
+
+run folder '\x0e\x00fresh\x00\r\x00\x10'
+check "one made before the first ^P is walked to, and listed once" \
+    "5 directories" "$(row 2)"
 
 run folder '\x0e\x00gone\x00\x1b'
 check "Esc closes the field" "~/Pictures" "$(row 2)"

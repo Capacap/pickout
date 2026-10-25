@@ -46,9 +46,13 @@ that is `exists`, `creates 2 directories` or `is a directory`.
 Overwriting takes two `Enter`s. A name that is a directory, or ends in
 `/`, is somewhere to go rather than something to save as: `Enter` makes
 whatever of it is missing, goes in, and leaves the field empty for the
-filename. `Space` marks a row in the modes that
-take more than one answer, and marks survive changing directory: once
-anything is marked, the marks are the whole answer.
+filename. The `^N` field says what it would make before `Enter` too. A
+dialog cancelled or closed without an answer removes the directories it
+made again, except any that something has been put in.
+
+`Space` marks a row in the modes that take more than one answer, and
+marks survive changing directory: once anything is marked, the marks are
+the whole answer.
 
 `^P` ranks every directory under `$HOME` as you type. The walk runs in
 the background, so the dialog still opens at once.
@@ -56,7 +60,9 @@ the background, so the dialog still opens at once.
 The footer is not a written-down copy of any of this. It asks the same
 table the dispatcher asks, so a key it names is a key that works, and one
 that works in the pane you are in gets named. Rebind something and the
-footer says the key you chose.
+footer says the key you chose. A window too narrow for all of them drops
+whole entries, in the order `M-h`, `^L`, `Tab`, `^P`, `^F`, `^N` and
+`Space`. The answer and `Esc` are never dropped.
 
 ## Installation
 
